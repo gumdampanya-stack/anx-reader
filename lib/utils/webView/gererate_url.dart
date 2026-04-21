@@ -16,6 +16,7 @@ String generateUrl(
   String? fontPath,
   String? backgroundColor,
   bool? importing,
+  bool isDarkMode = false,
 }) {
   String indexHtmlPath =
       "http://127.0.0.1:${Server().port}/foliate-js/index.html";
@@ -31,6 +32,11 @@ String generateUrl(
   textColor = convertDartColorToJs(textColor);
   backgroundColor = convertDartColorToJs(backgroundColor);
 
+  // Get effective background image URL using the new method
+  String bgimgUrl = Prefs().bgimg.getEffectiveUrl(
+        isDarkMode: isDarkMode,
+        autoAdjust: Prefs().autoAdjustReadingTheme,
+      );
   // const importing = $importing
   // const url = '${replaceSingleQuote(url)}'
   // let initialCfi = '${replaceSingleQuote(cfi)}'
@@ -77,12 +83,19 @@ String generateUrl(
     'hyphenate': false,
     'pageTurnStyle': Prefs().pageTurnStyle.name,
     'maxColumnCount': bookStyle.maxColumnCount,
+    'columnThreshold': bookStyle.columnThreshold,
     'writingMode': Prefs().writingMode.code,
     'textAlign': Prefs().textAlignment.code,
-    'backgroundImage': Prefs().bgimg.url,
+    'backgroundImage': bgimgUrl,
+    'bgimgBlur': Prefs().bgimg.blur,
+    'bgimgOpacity': Prefs().bgimg.opacity,
+    'bgimgFit': Prefs().bgimgFit.code,
     'allowScript': Prefs().enableJsForEpub,
     'customCSS': Prefs().customCSS,
     'customCSSEnabled': Prefs().customCSSEnabled,
+    'useBookStyles': Prefs().useBookStyles,
+    'headingFontSize': bookStyle.headingFontSize,
+    'codeHighlightTheme': Prefs().codeHighlightTheme.code,
   };
 
   Map<String, dynamic> readingRules = {

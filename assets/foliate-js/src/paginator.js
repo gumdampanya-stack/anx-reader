@@ -3,11 +3,10 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const lerp = (min, max, x) => x * (max - min) + min
 const easeOutSine = x => Math.sin((x * Math.PI) / 2)
 // const easeOutSine = x => 1 - (1 - x) * (1 - x);
-const animate = (a, b, duration, ease, render, { initialProgress = 0 } = {}) => new Promise(resolve => {
+const animate = (a, b, duration, ease, render) => new Promise(resolve => {
   let start
-  const clampedInitial = Math.max(0, Math.min(initialProgress, 0.95))
   const step = now => {
-    start ??= now - clampedInitial * duration
+    start ??= now
     const fraction = Math.min(1, (now - start) / duration)
     render(lerp(a, b, ease(fraction)))
     if (fraction < 1) requestAnimationFrame(step)
@@ -135,9 +134,33 @@ const getBackground = (bgimgUrl) => {
   if (bgimgUrl === 'none') {
     bg = `none`
   } else {
-    bg = `url(${bgimgUrl}) repeat scroll 50% 50% / 100% 100%`
+    bg = `url(${bgimgUrl})`
   }
   return bg
+}
+
+const applyBackground = (el, bgimgUrl, blur, opacity, fit) => {
+  el.style.background = getBackground(bgimgUrl)
+  el.style.backgroundPosition = 'center center'
+  el.style.backgroundRepeat = 'no-repeat'
+  el.style.backgroundAttachment = 'scroll'
+  el.style.backgroundSize = fit === 'stretch' ? '100% 100%' : 'cover'
+  el.style.filter = (blur && blur > 0) ? `blur(${blur}px)` : ''
+  el.style.opacity = (opacity != null) ? opacity : 1
+  // Expand the background element beyond its grid cell when blur is active so
+  // the blurred edges are not clipped by the parent overflow:hidden boundary.
+  if (blur && blur > 0) {
+    const expand = `${blur * 2}px`
+    el.style.margin = `-${expand}`
+    el.style.width = `calc(100% + ${expand} * 2)`
+    el.style.height = `calc(100% + ${expand} * 2)`
+    // Keep the visual fill identical to the unblurred state; only the
+    // element bounds expand so blurred edges can bleed outside the viewport.
+  } else {
+    el.style.margin = ''
+    el.style.width = ''
+    el.style.height = ''
+  }
 }
 
 const makeMarginals = (length, part) => Array.from({ length }, () => {
@@ -294,19 +317,24 @@ class View {
     this.expand()
   }
   setImageSize() {
-    const { width, height, margin } = this.#layout
+    const { width, height, margin, columnWidth } = this.#layout
     const vertical = this.#vertical
     const doc = this.document
     for (const el of doc.body.querySelectorAll('img, svg, video')) {
       // preserve max size if they are already set
       const { maxHeight, maxWidth } = doc.defaultView.getComputedStyle(el)
+      // Cap max-width to the column width to prevent images from overflowing
+      // into the next page when the EPUB embeds a large inline max-width value.
+      const effectiveMaxWidth = vertical
+        ? `${width - margin * 2}px`
+        : columnWidth
+          ? `${columnWidth}px`
+          : (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%')
       setStylesImportant(el, {
         'max-height': vertical
           ? (maxHeight !== 'none' && maxHeight !== '0px' ? maxHeight : '100%')
           : `${height - margin * 2}px`,
-        'max-width': vertical
-          ? `${width - margin * 2}px`
-          : (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
+        'max-width': effectiveMaxWidth,
         'object-fit': 'contain',
         'page-break-inside': 'avoid',
         'break-inside': 'avoid',
@@ -383,7 +411,8 @@ class View {
 export class Paginator extends HTMLElement {
   static observedAttributes = [
     'flow', 'gap', 'top-margin', 'bottom-margin', 'background-color',
-    'max-inline-size', 'max-block-size', 'max-column-count',
+    'max-inline-size', 'max-block-size', 'max-column-count', 'column-threshold', 'bgimg-url',
+    'bgimg-blur', 'bgimg-opacity', 'bgimg-fit',
   ]
   #root = this.attachShadow({ mode: 'open' })
   #observer = new ResizeObserver(() => this.render())
@@ -410,42 +439,8 @@ export class Paginator extends HTMLElement {
   #touchScrolled
   #loadingNext = false
   #loadingPrev = false
-  #momentumDisabled = false
-  #prevOverflowScrolling = ''
-  #prevOverflowX = ''
-  #prevOverflowY = ''
-  #momentumTimer = null
   #pendingRelocate = null
-  #cancelMomentumTimer() {
-    if (this.#momentumTimer) {
-      clearTimeout(this.#momentumTimer)
-      this.#momentumTimer = null
-    }
-  }
-  #disableMomentum() {
-    this.#cancelMomentumTimer()
-    if (this.#momentumDisabled) return
-    const style = this.#container.style
-    this.#prevOverflowScrolling = style.webkitOverflowScrolling
-    this.#prevOverflowX = style.overflowX
-    this.#prevOverflowY = style.overflowY
-    style.webkitOverflowScrolling = 'auto'
-    if (this.scrollProp === 'scrollLeft') style.overflowX = 'hidden'
-    else style.overflowY = 'hidden'
-    this.#momentumDisabled = true
-  }
-  #restoreMomentum() {
-    this.#cancelMomentumTimer()
-    if (!this.#momentumDisabled) return
-    const style = this.#container.style
-    style.webkitOverflowScrolling = this.#prevOverflowScrolling || 'touch'
-    style.overflowX = this.#prevOverflowX || ''
-    style.overflowY = this.#prevOverflowY || ''
-    this.#prevOverflowScrolling = ''
-    this.#prevOverflowX = ''
-    this.#prevOverflowY = ''
-    this.#momentumDisabled = false
-  }
+  #isSnapping = false
   constructor() {
     super()
     this.#root.innerHTML = `<style>
@@ -586,7 +581,7 @@ export class Paginator extends HTMLElement {
 
     this.#mediaQueryListener = () => {
       if (!this.#view) return
-      this.#background.style.background = getBackground(this.getAttribute('bgimg-url'))
+      this.#applyBackground()
     }
     this.#mediaQuery.addEventListener('change', this.#mediaQueryListener)
   }
@@ -603,16 +598,30 @@ export class Paginator extends HTMLElement {
       case 'bottom-margin':
       case 'gap':
       case 'max-column-count':
+      case 'column-threshold':
       case 'max-inline-size':
         // needs explicit `render()` as it doesn't necessarily resize
         this.#top.style.setProperty('--_' + name, value)
         this.render()
+        break
+      case 'bgimg-url':
+      case 'bgimg-blur':
+      case 'bgimg-opacity':
+      case 'bgimg-fit':
+        if (this.#background) this.#applyBackground()
         break
     }
   }
   open(book) {
     this.bookDir = book.dir
     this.sections = book.sections
+  }
+  #applyBackground() {
+    const url = this.getAttribute('bgimg-url') ?? 'none'
+    const blur = parseFloat(this.getAttribute('bgimg-blur') ?? '0')
+    const opacity = parseFloat(this.getAttribute('bgimg-opacity') ?? '1')
+    const fit = this.getAttribute('bgimg-fit') ?? 'cover'
+    applyBackground(this.#background, url, blur, opacity, fit)
   }
   #createView() {
     if (this.#view) {
@@ -633,13 +642,13 @@ export class Paginator extends HTMLElement {
 
     // set background to `doc` background
     // this is needed because the iframe does not fill the whole element
-    this.#background.style.background = getBackground(this.getAttribute('bgimg-url'))
+    this.#applyBackground()
 
     const { width, height } = this.#container.getBoundingClientRect()
     const size = vertical ? height : width
 
     const style = getComputedStyle(this.#top)
-    const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
+    const maxInlineSize = parseFloat(style.getPropertyValue('--_column-threshold')) || parseFloat(style.getPropertyValue('--_max-inline-size'))
     const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count'))
     const margin = parseFloat(style.getPropertyValue('--_top-margin'))
     this.#margin = margin
@@ -769,41 +778,68 @@ export class Paginator extends HTMLElement {
     else element.scrollBy({ left: 0, top: delta, behavior: 'auto' })
   }
   snap(vx, vy, touchState) {
+    if (this.#isSnapping) return
+    
     const state = touchState ?? this.#touchState
     const velocity = this.#vertical ? vy : vx
     const { pages, size } = this
-    if (!pages || size === 0) {
-      this.#restoreMomentum()
-      return
-    }
-    const currentOffset = this.#container[this.scrollProp]
-    const signedOffset = this.#rtl ? -currentOffset : currentOffset
-    let page = Math.round(signedOffset / size)
-    const velocityThreshold = 0.25
-    if (Math.abs(velocity) > velocityThreshold)
-      page += velocity > 0 ? 1 : -1
-    const originPage = state?.startPage ?? this.page
-    if (!this.scrolled) {
-      const deltaPages = page - originPage
-      if (deltaPages > 1) page = originPage + 1
-      else if (deltaPages < -1) page = originPage - 1
-    }
-    page = Math.max(0, Math.min(pages - 1, page))
-    const targetOffset = page * size
-    const distance = Math.abs(targetOffset - signedOffset)
-    const baseDuration = 450
-    const duration = Math.max(260, Math.min(380,
-      baseDuration * (distance / (size || 1) + 0.2)))
+    if (!pages || size === 0) return
 
-    const pageArg = this.#rtl ? -page : page
-    this.#disableMomentum()
-    return this.#scrollToPage(pageArg, 'snap', { animate: true, duration, restoreMomentum: true, momentumDelay: 20, initialVelocity: velocity }).then(() => {
-      const dir = page <= 0 ? -1 : page >= pages - 1 ? 1 : null
-      if (dir) return this.#goTo({
-        index: this.#adjacentIndex(dir),
-        anchor: dir < 0 ? () => 1 : () => 0,
+    const element = this.#container
+    const { scrollProp } = this
+    const isHorizontal = scrollProp === 'scrollLeft'
+    
+    // Stop native momentum scrolling immediately
+    const currentScrollPos = element[scrollProp]
+    const overflowProp = isHorizontal ? 'overflowX' : 'overflowY'
+    const prevOverflow = element.style[overflowProp]
+    element.style[overflowProp] = 'hidden'
+    element[scrollProp] = currentScrollPos
+    
+    // Calculate current position and target page
+    const currentOffset = Math.abs(currentScrollPos)
+    const currentPage = Math.round(currentOffset / size)
+    
+    // Determine target page based on velocity
+    const velocityThreshold = 0.3  // Higher threshold to reduce accidental triggers
+    let targetPage = currentPage
+    if (Math.abs(velocity) > velocityThreshold) {
+      targetPage += velocity > 0 ? 1 : -1
+    }
+    
+    // Single page limit (keep existing feature)
+    const originPage = state?.startPage ?? currentPage
+    if (!this.scrolled) {
+      const delta = targetPage - originPage
+      if (delta > 1) targetPage = originPage + 1
+      else if (delta < -1) targetPage = originPage - 1
+    }
+    
+    // Boundary limits
+    targetPage = Math.max(0, Math.min(pages - 1, targetPage))
+    
+    // Calculate animation duration based on distance
+    const targetOffset = targetPage * size
+    const distance = Math.abs(targetOffset - currentOffset)
+    const duration = Math.max(200, Math.min(300, 250 * (distance / (size || 1))))
+
+    const pageArg = this.#rtl ? -targetPage : targetPage
+    this.#isSnapping = true
+    
+    return this.#scrollToPage(pageArg, 'snap', { animate: true, duration })
+      .then(() => {
+        // Handle chapter boundaries (keep existing feature)
+        const dir = targetPage <= 0 ? -1 : targetPage >= pages - 1 ? 1 : null
+        if (dir) return this.#goTo({
+          index: this.#adjacentIndex(dir),
+          anchor: dir < 0 ? () => 1 : () => 0,
+        })
       })
-    })
+      .finally(() => {
+        this.#isSnapping = false
+        // Restore overflow after snap is complete
+        element.style[overflowProp] = prevOverflow
+      })
   }
   #onTouchStart(e) {
     const touch = e.changedTouches[0]
@@ -910,7 +946,7 @@ export class Paginator extends HTMLElement {
 
     if (verticalDrag && horizontalAxis) {
       e.preventDefault()
-      this.#disableMomentum()
+      // Lock horizontal position during vertical drag (direction locking)
       if (state.lockedOffset == null)
         state.lockedOffset = state.startScroll ?? this.#container.scrollLeft
       this.#container.scrollLeft = state.lockedOffset
@@ -949,9 +985,8 @@ export class Paginator extends HTMLElement {
       && state.lockedOffset != null
 
     if (verticalLocked) {
-      // restore original horizontal position and skip snapping to avoid accidental page turns
+      // Restore original horizontal position and skip snapping to avoid accidental page turns
       this.#container.scrollLeft = state.lockedOffset
-      this.#restoreMomentum()
       this.#touchState = null
       if (this.#pendingRelocate) {
         const detail = this.#pendingRelocate
@@ -1008,28 +1043,19 @@ export class Paginator extends HTMLElement {
     const element = this.#container
     const { scrollProp, size } = this
     this.#ignoreNativeScroll = true
+    
     const opts = typeof smooth === 'object' ? smooth ?? {} : {}
     const shouldAnimate = opts.animate ?? (reason === 'snap' || smooth === true)
     const easing = opts.easing ?? easeOutSine
+    
     const finish = () => {
       this.#afterScroll(reason)
       this.#ignoreNativeScroll = false
-      if (reason === 'snap' || opts.restoreMomentum) {
-        const delay = opts.momentumDelay ?? 20
-        this.#cancelMomentumTimer()
-        this.#momentumTimer = setTimeout(() => {
-          this.#restoreMomentum()
-        }, delay)
-      }
     }
-    if (reason === 'snap' || opts.disableMomentum) this.#disableMomentum()
 
-    const previousBehavior = element.style.scrollBehavior
-    if (shouldAnimate) element.style.scrollBehavior = 'auto'
-
+    // If already at target position
     if (Math.abs(element[scrollProp] - offset) < 1) {
       finish()
-      element.style.scrollBehavior = previousBehavior
       return
     }
 
@@ -1037,77 +1063,29 @@ export class Paginator extends HTMLElement {
     if (this.scrolled && this.#vertical) offset = -offset
 
     const useAnimation = shouldAnimate && this.hasAttribute('animated')
-    const propKey = scrollProp === 'scrollLeft' ? 'left' : 'top'
 
     if (useAnimation) {
       const distance = Math.abs(element[scrollProp] - offset)
-      const baseDuration = 300
-      const adaptiveDuration = opts.duration ?? Math.min(
-        400,
-        Math.max(200, baseDuration * (distance / (size || 1)))
-      )
-
-      // Give the snap animation an initial kick based on release velocity so it
-      // doesn't start from a standstill and then accelerate.
-      const averageSpeed = adaptiveDuration ? distance / adaptiveDuration : 0
-      const initialSpeed = Math.abs(opts.initialVelocity ?? 0) * 0.3
-      const initialProgress = averageSpeed > 0
-        ? Math.min(0.45, (initialSpeed / averageSpeed) * 0.2)
-        : 0
-
-      // Prefer native smooth scroll (runs on compositor and can keep 120Hz on Safari)
-      const isSafari = /^(?!.*(Chrome|CriOS|Edg|Edge)).*AppleWebKit/i.test(navigator.userAgent)
-      const supportsSmooth = 'scrollBehavior' in document.documentElement.style && isSafari
-      if (supportsSmooth && !opts.forceJsAnimation) {
-        this.#justAnchored = true
-        element.style.scrollBehavior = 'smooth'
-        element.scrollTo({ [propKey]: offset, behavior: 'smooth' })
-
-        // Resolve when we get close to target or after the expected duration.
-        return new Promise(resolve => {
-          const start = performance.now()
-          const check = now => {
-            const done = Math.abs(element[scrollProp] - offset) < 0.5
-              || now - start > adaptiveDuration + 120
-            if (done) resolve()
-            else requestAnimationFrame(check)
-          }
-          requestAnimationFrame(check)
-        }).then(() => {
-          element[scrollProp] = offset
-          return wait(10)
-        }).then(() => {
-          finish()
-          element.style.scrollBehavior = previousBehavior
-        })
-      }
+      const duration = opts.duration ?? Math.max(200, Math.min(300, 250 * (distance / (size || 1))))
 
       this.#justAnchored = true
 
       return animate(
         element[scrollProp],
         offset,
-        adaptiveDuration,
+        duration,
         easing,
         x => element[scrollProp] = x,
-        { initialProgress },
       ).then(() => {
+        // Ensure exact position
         element[scrollProp] = offset
-        return wait(10)
-      }).then(() => {
         finish()
-        element.style.scrollBehavior = previousBehavior
-      }).catch(err => {
+      }).catch(() => {
         this.#ignoreNativeScroll = false
-        this.#restoreMomentum()
-        element.style.scrollBehavior = previousBehavior
-        throw err
       })
     } else {
-      element.style.scrollBehavior = 'auto'
       element[scrollProp] = offset
       finish()
-      element.style.scrollBehavior = previousBehavior
     }
   }
   async #scrollToPage(page, reason, smooth) {
@@ -1360,7 +1338,7 @@ export class Paginator extends HTMLElement {
       $style.textContent = style
     } else $style.textContent = styles
 
-    this.#background.style.background = getBackground(this.getAttribute('bgimg-url'))
+    this.#applyBackground()
 
     // needed because the resize observer doesn't work in Firefox
     this.#view?.document?.fonts?.ready?.then(() => this.#view.expand())
@@ -1378,7 +1356,6 @@ export class Paginator extends HTMLElement {
       cancelAnimationFrame(this.#pendingScrollFrame)
       this.#pendingScrollFrame = null
     }
-    this.#restoreMomentum()
     this.#pendingRelocate = null
   }
 }

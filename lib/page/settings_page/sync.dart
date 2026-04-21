@@ -1,12 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:url_launcher/url_launcher.dart';
+
 import 'package:anx_reader/dao/database.dart';
 import 'package:anx_reader/enums/sync_protocol.dart';
 import 'package:anx_reader/l10n/generated/L10n.dart';
 import 'package:anx_reader/main.dart';
 import 'package:anx_reader/providers/sync.dart';
 import 'package:anx_reader/service/sync/sync_client_factory.dart';
+import 'package:anx_reader/utils/platform_utils.dart';
 import 'package:anx_reader/utils/save_file_to_download.dart';
 import 'package:anx_reader/utils/get_path/get_temp_dir.dart';
 import 'package:anx_reader/utils/get_path/databases_path.dart';
@@ -56,6 +59,28 @@ class _SyncSettingState extends ConsumerState<SyncSetting> {
                 onPressed: (context) async {
                   showWebdavDialog(context);
                 }),
+            CustomSettingsTile(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(40, 0, 20, 10),
+                child: GestureDetector(
+                  onTap: () async {
+                    if (!await launchUrl(
+                        Uri.parse('https://anx.anxcye.com/docs/sync/webdav'),
+                        mode: LaunchMode.externalApplication)) {
+                      AnxToast.show(L10n.of(context).commonFailed);
+                    }
+                  },
+                  child: Text(
+                    L10n.of(context).settingsNarrateClickForHelp,
+                    style: TextStyle(
+                      color: Theme.of(context).primaryColor,
+                      decoration: TextDecoration.underline,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ),
+            ),
             SettingsTile.navigation(
                 title: Text(L10n.of(context).settingsSyncWebdavSyncNow),
                 leading: const Icon(Icons.sync_alt),
@@ -287,7 +312,7 @@ Future<String> createZipFile(Map<String, dynamic> params) async {
     getCoverDir(path: docPath),
     getFontDir(path: docPath),
     getBgimgDir(path: docPath),
-    await getAnxDataBasesDir(),
+    if (!AnxPlatform.isOhos) await getAnxDataBasesDir(),
     // await getAnxSharedPrefsDir(),
     // await getAnxShredPrefsFile(),
     prefsBackupFile,
@@ -297,6 +322,18 @@ Future<String> createZipFile(Map<String, dynamic> params) async {
 
   final encoder = ZipFileEncoder();
   encoder.create(zipPath);
+
+  if (AnxPlatform.isOhos) {
+    final dbDir = await getAnxDataBasesDir();
+    final dbFile = File('${dbDir.path}/app_database.db');
+    if (await dbFile.exists()) {
+      await encoder.addFile(dbFile, 'databases/app_database.db');
+    }
+  } else {
+    final dbDir = await getAnxDataBasesDir();
+    await encoder.addDirectory(dbDir);
+  }
+
   for (final dir in directoryList) {
     if (dir is Directory) {
       await encoder.addDirectory(dir);
@@ -393,7 +430,7 @@ void showWebdavDialog(BuildContext context) {
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               TextButton.icon(
-                onPressed: () => SyncTestHelper.handleTestConnection(
+                onPressed: () => SyncTestHelper.handleFullTestConnection(
                   context,
                   protocol: SyncProtocol.webdav,
                   config: {

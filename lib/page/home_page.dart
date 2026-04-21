@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:ui';
 
 import 'package:anx_reader/dao/database.dart';
@@ -18,6 +17,7 @@ import 'package:anx_reader/utils/env_var.dart';
 import 'package:anx_reader/utils/get_path/get_temp_dir.dart';
 import 'package:anx_reader/utils/load_default_font.dart';
 import 'package:anx_reader/utils/log/common.dart';
+import 'package:anx_reader/utils/platform_utils.dart';
 import 'package:anx_reader/providers/sync.dart';
 import 'package:anx_reader/providers/iap.dart';
 import 'package:anx_reader/config/shared_preference_provider.dart';
@@ -27,7 +27,6 @@ import 'package:anx_reader/widgets/common/container/filled_container.dart';
 import 'package:anx_reader/widgets/settings/about.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_floating_bottom_bar/flutter_floating_bottom_bar.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -45,7 +44,7 @@ class HomePage extends ConsumerStatefulWidget {
 }
 
 class _HomePageState extends ConsumerState<HomePage> {
-  int _currentIndex = 0;
+  String _currentTab = 'bookshelf';
 
   bool? _expanded;
 
@@ -116,11 +115,11 @@ class _HomePageState extends ConsumerState<HomePage> {
     }
     loadDefaultFont();
 
-    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+    if (AnxPlatform.isWindows) {
       await _checkWindowsWebview();
     }
 
-    if (Platform.isAndroid || Platform.isIOS) {
+    if (AnxPlatform.isAndroid || AnxPlatform.isIOS || AnxPlatform.isOhos) {
       receiveShareIntent(ref);
     }
 
@@ -131,22 +130,6 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    Widget pages(
-      int index,
-      BoxConstraints constraints,
-      ScrollController? controller,
-    ) {
-      final page = [
-        BookshelfPage(controller: controller),
-        if (Prefs().bottomNavigatorShowStatistics)
-          StatisticPage(controller: controller),
-        if (Prefs().bottomNavigatorShowAI) AiChatStream(),
-        if (Prefs().bottomNavigatorShowNote) NotesPage(controller: controller),
-        SettingsPage(controller: controller),
-      ];
-      return page[index];
-    }
-
     List<Map<String, dynamic>> navBarItems = [
       {
         'icon': EvaIcons.book_open,
@@ -159,7 +142,7 @@ class _HomePageState extends ConsumerState<HomePage> {
           'label': L10n.of(context).navBarStatistics,
           'identifier': 'statistics'
         },
-      if (Prefs().bottomNavigatorShowAI)
+      if (Prefs().bottomNavigatorShowAI && EnvVar.enableAIFeature)
         {
           'icon': Icons.auto_awesome,
           'label': L10n.of(context).navBarAI,
@@ -178,6 +161,30 @@ class _HomePageState extends ConsumerState<HomePage> {
       },
     ];
 
+    int currentIndex = navBarItems
+        .indexWhere((element) => element['identifier'] == _currentTab);
+    if (currentIndex == -1) {
+      currentIndex = 0;
+      _currentTab = 'bookshelf';
+    }
+
+    Widget pages(
+      int index,
+      BoxConstraints constraints,
+      ScrollController? controller,
+    ) {
+      final page = [
+        BookshelfPage(controller: controller),
+        if (Prefs().bottomNavigatorShowStatistics)
+          StatisticPage(controller: controller),
+        if (Prefs().bottomNavigatorShowAI && EnvVar.enableAIFeature)
+          AiChatStream(),
+        if (Prefs().bottomNavigatorShowNote) NotesPage(controller: controller),
+        SettingsPage(controller: controller),
+      ];
+      return page[index];
+    }
+
     void onBottomTap(int index, bool fromRail) {
       VibrationService.heavy();
       if (navBarItems[index]['identifier'] == 'ai' && !fromRail) {
@@ -186,7 +193,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         return;
       }
       setState(() {
-        _currentIndex = index;
+        _currentTab = navBarItems[index]['identifier'];
       });
     }
 
@@ -238,7 +245,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                         ),
                         groupAlignment: 1,
                         extended: false,
-                        selectedIndex: _currentIndex,
+                        selectedIndex: currentIndex,
                         onDestinationSelected: (int index) =>
                             onBottomTap(index, true),
                         destinations: railBarItems,
@@ -249,25 +256,28 @@ class _HomePageState extends ConsumerState<HomePage> {
                     ),
                   ),
                 ),
-                Expanded(child: pages(_currentIndex, constraints, null)),
+                Expanded(child: pages(currentIndex, constraints, null)),
               ],
             ),
           );
         } else {
-          if (navBarItems[_currentIndex]['identifier'] == 'ai') {
-            _currentIndex = 0;
+          if (navBarItems[currentIndex]['identifier'] == 'ai') {
+            currentIndex = 0;
           }
           return Scaffold(
             extendBody: true,
             body: BottomBar(
+              width: 330,
               body: (_, controller) =>
-                  pages(_currentIndex, constraints, controller),
-              hideOnScroll: true,
+                  pages(currentIndex, constraints, controller),
+              hideOnScroll: Prefs().autoHideBottomBar,
               scrollOpposite: false,
               curve: Curves.easeIn,
               barColor: Colors.transparent,
               iconDecoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primary,
+                color: Prefs().autoHideBottomBar
+                    ? Theme.of(context).colorScheme.primary
+                    : Colors.transparent,
                 borderRadius: BorderRadius.circular(500),
               ),
               child: ClipRRect(
@@ -293,7 +303,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                       type: BottomNavigationBarType.fixed,
                       landscapeLayout:
                           BottomNavigationBarLandscapeLayout.linear,
-                      currentIndex: _currentIndex,
+                      currentIndex: currentIndex,
                       onTap: (int index) => onBottomTap(index, false),
                       items: bottomBarItems,
                       backgroundColor: Colors.transparent,

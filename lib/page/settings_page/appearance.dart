@@ -1,5 +1,6 @@
 import 'package:anx_reader/config/shared_preference_provider.dart';
 import 'package:anx_reader/l10n/generated/L10n.dart';
+import 'package:anx_reader/utils/env_var.dart';
 import 'package:anx_reader/widgets/common/anx_segmented_button.dart';
 import 'package:anx_reader/widgets/settings/settings_title.dart';
 import 'package:anx_reader/widgets/settings/simple_dialog.dart';
@@ -27,6 +28,7 @@ const List<Map<String, String>> languageOptions = [
   {'Português': 'pt'},
   {'日本語': 'ja'},
   {'한국어': 'ko'},
+  {'Română': 'ro'},
 ];
 
 class AppearanceSetting extends StatefulWidget {
@@ -114,6 +116,15 @@ class _AppearanceSettingState extends State<AppearanceSetting> {
                 },
               ),
               SettingsTile.switchTile(
+                title: Text(L10n.of(context).settingsAdvancedAutoHideBottomBar),
+                leading: const Icon(Icons.vertical_align_bottom),
+                initialValue: Prefs().autoHideBottomBar,
+                onToggle: (value) {
+                  Prefs().autoHideBottomBar = value;
+                  setState(() {});
+                },
+              ),
+              SettingsTile.switchTile(
                 title: Text(L10n.of(context).reduceVibrationFeedback),
                 leading: const Icon(Icons.vibration),
                 initialValue: Prefs().reduceVibrationFeedback,
@@ -122,6 +133,18 @@ class _AppearanceSettingState extends State<AppearanceSetting> {
                     Prefs().reduceVibrationFeedback = value;
                   });
                 },
+              ),
+              SettingsTile.switchTile(
+                title: Text(L10n.of(context).readingPageShowActionLabels),
+                leading: const Icon(Icons.subtitles_outlined),
+                initialValue: Prefs().showActionLabels,
+                onToggle: (bool value) {
+                  setState(() {
+                    Prefs().showActionLabels = value;
+                  });
+                },
+                description:
+                    Text(L10n.of(context).readingPageShowActionLabelsTips),
               ),
             ]),
         SettingsSection(
@@ -178,6 +201,28 @@ class _AppearanceSettingState extends State<AppearanceSetting> {
                   ),
                 ),
               )),
+              SettingsTile.switchTile(
+                title: Text(
+                    L10n.of(context).settingsBookshelfDefaultCoverShowTitle),
+                leading: const Icon(Icons.title),
+                initialValue: Prefs().showBookTitleOnDefaultCover,
+                onToggle: (bool value) {
+                  setState(() {
+                    Prefs().showBookTitleOnDefaultCover = value;
+                  });
+                },
+              ),
+              SettingsTile.switchTile(
+                title: Text(
+                    L10n.of(context).settingsBookshelfDefaultCoverShowAuthor),
+                leading: const Icon(Icons.person),
+                initialValue: Prefs().showAuthorOnDefaultCover,
+                onToggle: (bool value) {
+                  setState(() {
+                    Prefs().showAuthorOnDefaultCover = value;
+                  });
+                },
+              ),
               // SettingsTile.switchTile(
               //   title: Text(
               //       L10n.of(context).settingsAdvancedUseOriginalCoverRatio),
@@ -193,15 +238,16 @@ class _AppearanceSettingState extends State<AppearanceSetting> {
         SettingsSection(
           title: Text(L10n.of(context).settingsAppearanceBottomNavigatorShow),
           tiles: [
-            SettingsTile.switchTile(
-              title: Text(L10n.of(context).navBarAI),
-              initialValue: Prefs().bottomNavigatorShowAI,
-              onToggle: (bool value) {
-                setState(() {
-                  Prefs().bottomNavigatorShowAI = value;
-                });
-              },
-            ),
+            if (EnvVar.enableAIFeature)
+              SettingsTile.switchTile(
+                title: Text(L10n.of(context).navBarAI),
+                initialValue: Prefs().bottomNavigatorShowAI,
+                onToggle: (bool value) {
+                  setState(() {
+                    Prefs().bottomNavigatorShowAI = value;
+                  });
+                },
+              ),
             SettingsTile.switchTile(
               title: Text(L10n.of(context).navBarStatistics),
               initialValue: Prefs().bottomNavigatorShowStatistics,

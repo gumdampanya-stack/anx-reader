@@ -1,9 +1,11 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'package:anx_reader/utils/platform_utils.dart';
 
 import 'package:anx_reader/config/shared_preference_provider.dart';
 import 'package:anx_reader/page/reading_page.dart';
 import 'package:anx_reader/service/tts/base_tts.dart';
+import 'package:anx_reader/service/tts/models/tts_voice.dart';
+import 'package:anx_reader/service/tts/tts_service.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -37,9 +39,9 @@ class SystemTts extends BaseTts {
     ttsStateNotifier.value = newState;
   }
 
-  bool get isIOS => !kIsWeb && Platform.isIOS;
-  bool get isAndroid => !kIsWeb && Platform.isAndroid;
-  bool get isWindows => !kIsWeb && Platform.isWindows;
+  bool get isIOS => AnxPlatform.isIOS;
+  bool get isAndroid => AnxPlatform.isAndroid;
+  bool get isWindows => AnxPlatform.isWindows;
   bool get isWeb => kIsWeb;
 
   @override
@@ -134,16 +136,69 @@ class SystemTts extends BaseTts {
     if (voice != null) {}
   }
 
+  /// Apply the voice by shortName
+  Future<void> _applyVoice(String? voiceShortName) async {
+    if (voiceShortName == null || voiceShortName.isEmpty) {
+      return;
+    }
+
+    try {
+      // Get all voices to find the matching one
+      final voices = await flutterTts.getVoices;
+      if (voices is List) {
+        for (var voice in voices) {
+          final map = Map<String, dynamic>.from(voice);
+          if (map['name'] == voiceShortName) {
+            // flutter_tts setVoice expects a Map with 'name' and 'locale'
+            await flutterTts.setVoice({
+              'name': map['name'],
+              'locale': map['locale'],
+            });
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      // Fallback: try to set voice directly (some platforms support this)
+      // Ignore errors if voice not found
+    }
+  }
+
+  /// For testing a specific voice in settings (matching OnlineTts API)
+  Future<void> speakWithVoice(String content, String voiceShortName) async {
+    await stop();
+    await flutterTts.setVolume(volume);
+    await flutterTts.setSpeechRate(rate);
+    await flutterTts.setPitch(pitch);
+    await _applyVoice(voiceShortName);
+    await flutterTts.speak(content);
+  }
+
   @override
   Future<void> speak({String? content}) async {
     await setAwaitOptions();
     if (content != null) {
       _currentVoiceText = content;
     }
-    _currentVoiceText ??= await getHereFunction();
+    if (_currentVoiceText == null) {
+      // getHereFunction() is initTts() — it initialises the JS TTS position
+      // but returns void.  Fetch the actual first sentence via getNextTextFunction.
+      await getHereFunction();
+      _currentVoiceText = await getNextTextFunction();
+    }
+
+    // Guard: if still null or empty (e.g. WebView not ready), abort.
+    if (_currentVoiceText == null || _currentVoiceText!.isEmpty) {
+      return;
+    }
+
     await flutterTts.setVolume(volume);
     await flutterTts.setSpeechRate(rate);
     await flutterTts.setPitch(pitch);
+
+    // Apply the saved voice model
+    final selectedVoice = SystemTtsProvider().resolveVoice(null);
+    await _applyVoice(selectedVoice);
 
     await flutterTts.speak(_currentVoiceText!);
 
@@ -211,6 +266,27 @@ class SystemTts extends BaseTts {
     await stop();
     speak();
     restarting = false;
+  }
+
+  @override
+  Future<List<TtsVoice>> getVoices() async {
+    try {
+      dynamic voices = await flutterTts.getVoices;
+      if (voices is List) {
+        return voices.map((e) {
+          final map = Map<String, dynamic>.from(e);
+          return TtsVoice(
+              shortName: map['name'] ?? '',
+              name: map['name'] ?? '',
+              locale: map['locale']?.replaceAll('_', '-') ?? '',
+              gender: map['gender']?.toString().toLowerCase() ?? '',
+              rawData: map);
+        }).toList();
+      }
+      return [];
+    } catch (e) {
+      return [];
+    }
   }
 
   @override

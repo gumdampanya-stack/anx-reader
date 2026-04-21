@@ -228,6 +228,12 @@ const setSelectionHandler = (view, doc, index) => {
     });
   }
   else if (navigator.platform.includes('Win')) {
+    // Prevent the default WebView2 context menu (back, reload, save as, print)
+    // from appearing on right-click inside the book content frame.
+    doc.addEventListener('contextmenu', e => {
+      e.preventDefault();
+    });
+
     if (navigator.maxTouchPoints > 0) {
       // In Edge, the longpress by touch generates following touch event sequence:
       // pointerover -> enter -> down -> move(n) -> cancel -> out -> leave
@@ -279,25 +285,56 @@ const setSelectionHandler = (view, doc, index) => {
     }
   }
 
-  else {
+  else if (navigator.userAgent.includes('Phone; OpenHarmony')) {
     doc.addEventListener('contextmenu', e => {
-      // if (e.pointerType === 'mouse') {
-      handleSelection(view, doc, index);
-      // }
+      e.preventDefault();
     });
 
-    if (navigator.userAgent.includes('Phone; OpenHarmony')) {
-      let debounceTimerId;
-      doc.addEventListener('selectionchange', () => {
-        const selRange = getSelectionRange(doc.getSelection());
-        if (!selRange) return;
+    var debounceTimerId = undefined;
+    doc.addEventListener('selectionchange', () => {
+      const selRange = getSelectionRange(doc.getSelection());
+      if (!selRange) return;
 
-        clearTimeout(debounceTimerId);
-        debounceTimerId = setTimeout(() => {
-          handleSelection(view, doc, index);
-        }, 500);
-      });
-    }
+      clearTimeout(debounceTimerId);
+      // Wait for selection to settle (e.g. 600ms after last change)
+      // This handles the case where pointerup/touchend is swallowed by native handles
+      debounceTimerId = setTimeout(() => {
+        handleSelection(view, doc, index);
+      }, 600);
+    });
+  } else { // Android
+    let hasNativeSelectionStarted = false;
+
+    doc.addEventListener('pointerdown', () => {
+      hasNativeSelectionStarted = false;
+    });
+
+    // When the native selection handles appear, the browser loses control of the pointer
+    // This event signals that the user has started dragging handles
+    doc.addEventListener('pointercancel', () => {
+      hasNativeSelectionStarted = true;
+    });
+
+    doc.addEventListener('contextmenu', e => {
+      // Allow mouse context menu (if any)
+      if (e.pointerType === 'mouse') {
+        handleSelection(view, doc, index);
+        return;
+      }
+
+      // If we haven't lost pointer control yet (no pointercancel),
+      // this is the "early" long-press event during drag start.
+      // We block it to prevent the custom menu from interfering with the drag.
+      if (!hasNativeSelectionStarted) {
+        e.preventDefault();
+        return;
+      }
+
+      // If we have entered native selection mode (pointercancel happened),
+      // this contextmenu event is likely triggered by the system or user interaction
+      // after the selection phase (e.g. on release). We handle it.
+      handleSelection(view, doc, index);
+    });
   }
   // doc.addEventListener('selectionchange', () => handleSelection(view, doc, index));
 
@@ -474,7 +511,10 @@ const getCSS = ({ fontSize,
   backgroundImage,
   flow,
   customCSS,
-  customCSSEnabled
+  customCSSEnabled,
+  useBookStyles,
+  headingFontSize,
+  codeHighlightTheme
 }) => {
 
   const fontFamily = fontName === 'book' ? '' :
@@ -483,13 +523,9 @@ const getCSS = ({ fontSize,
 
   const writingModeCSS = writingMode === 'auto' ? '' : `writing-mode: ${writingMode} !important;`
 
-  const backgroundImageCSS = !backgroundImage || flow || backgroundImage === 'none' ? 'background: none !important;' :
-    `background-image: url('${backgroundImage}') !important;
-    background-size: 100% 100% !important;
-    background-repeat: repeat !important;
-    background-attachment: scroll !important; 
-    background-position: center center !important;
-    background-clip: content-box !important;`
+  // Background images are rendered by the paginator layer so blur/opacity
+  // controls apply consistently across the whole reading surface.
+  const backgroundImageCSS = 'background: none !important;'
 
 
   // Some CSS selectors are inspired by https://github.com/readest/foliate-js
@@ -506,8 +542,8 @@ const getCSS = ({ fontSize,
         color: ${fontColor} !important;
         ${backgroundImageCSS}
         background-color: transparent !important;
-        letter-spacing: ${letterSpacing}px;
-        font-size: ${fontSize}em;
+        ${useBookStyles ? '' : `letter-spacing: ${letterSpacing}px;`}
+        ${useBookStyles ? '' : `font-size: ${fontSize}em;`}
         orphans: 1;  
         widows: 1;
     }
@@ -547,16 +583,39 @@ const getCSS = ({ fontSize,
         ${fontFamily}
     }
 
-    h1, h2, h3, h4, h5, h6 {
+    ${useBookStyles ? '' : `
+    h1 { 
+        font-size: calc(2em * ${headingFontSize}) !important; 
         line-height: ${spacing} !important;
     }
+    h2 { 
+        font-size: calc(1.5em * ${headingFontSize}) !important; 
+        line-height: ${spacing} !important;
+    }
+    h3 { 
+        font-size: calc(1.17em * ${headingFontSize}) !important; 
+        line-height: ${spacing} !important;
+    }
+    h4 { 
+        font-size: calc(1em * ${headingFontSize}) !important; 
+        line-height: ${spacing} !important;
+    }
+    h5 { 
+        font-size: calc(0.83em * ${headingFontSize}) !important; 
+        line-height: ${spacing} !important;
+    }
+    h6 { 
+        font-size: calc(0.67em * ${headingFontSize}) !important; 
+        line-height: ${spacing} !important;
+    }
+    `}
 
     p, li, blockquote, dd, div:not(:has(*:not(b, a, em, i, strong, u, span))), font {
         color: ${fontColor} !important;
-        line-height: ${spacing} !important;
-        font-weight: ${fontWeight} !important;
-        text-align: ${textAlign === 'auto' ? (justify ? 'justify' : 'start') : textAlign};
-        ${textIndent < 0 ? '' : 'text-indent: ' + textIndent + 'em !important;'}
+        ${useBookStyles ? '' : `line-height: ${spacing} !important;`}
+        ${useBookStyles ? '' : `font-weight: ${fontWeight} !important;`}
+        ${useBookStyles ? '' : `text-align: ${textAlign === 'auto' ? (justify ? 'justify' : 'start') : textAlign};`}
+        ${useBookStyles || textIndent < 0 ? '' : 'text-indent: ' + textIndent + 'em !important;'}
         -webkit-hyphens: ${hyphenate ? 'auto' : 'manual'};
         hyphens: ${hyphenate ? 'auto' : 'manual'};
         -webkit-hyphenate-limit-before: 3;
@@ -564,8 +623,8 @@ const getCSS = ({ fontSize,
         -webkit-hyphenate-limit-lines: 2;
         hanging-punctuation: allow-end last;
         widows: 2;
-        margin-block-start: ${paragraphSpacing / 2}em !important;
-        margin-block-end: ${paragraphSpacing / 2}em !important;
+        ${useBookStyles ? '' : `margin-block-start: ${paragraphSpacing / 2}em !important;`}
+        ${useBookStyles ? '' : `margin-block-end: ${paragraphSpacing / 2}em !important;`}
     }
 
     .anx-text-center,
@@ -604,9 +663,63 @@ const getCSS = ({ fontSize,
     [align="center"] { text-align: center; }
     [align="justify"] { text-align: justify; }
 
+    /* Code highlighting styles */
     pre {
         white-space: pre-wrap !important;
+        background: rgba(128, 128, 128, 0.1) !important;
+        border-radius: 6px !important;
+        padding: 1em !important;
+        overflow: visible !important;
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace !important;
+        font-size: 0.9em !important;
+        line-height: 1.5 !important;
+        margin: 0.5em 0 !important;
+        /* Allow code blocks to be split across columns/pages in WebKit */
+        break-inside: auto !important;
+        page-break-inside: auto !important;
+        -webkit-column-break-inside: auto !important;
+        /* Force block formatting context to allow proper column breaks */
+        display: block !important;
+        /* Remove any max-height constraints */
+        max-height: none !important;
+        height: auto !important;
     }
+    
+    /* Individual lines within code can break across columns */
+    pre code {
+        display: block !important;
+        break-inside: auto !important;
+        page-break-inside: auto !important;
+        -webkit-column-break-inside: auto !important;
+        overflow: visible !important;
+        max-height: none !important;
+        height: auto !important;
+        white-space: pre-wrap !important;
+    }
+    
+    /* Line wrapper for Safari column breaking */
+    .anx-code-line {
+        display: block !important;
+        break-inside: avoid !important;
+        page-break-inside: avoid !important;
+        -webkit-column-break-inside: avoid !important;
+    }
+    
+    code {
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace !important;
+        font-size: 0.9em !important;
+        background: rgba(128, 128, 128, 0.15) !important;
+        padding: 0.2em 0.4em !important;
+        border-radius: 3px !important;
+    }
+    
+    pre > code {
+        background: transparent !important;
+        padding: 0 !important;
+        border-radius: 0 !important;
+        font-size: 1em !important;
+    }
+    
     aside[epub|type~="endnote"],
     aside[epub|type~="footnote"],
     aside[epub|type~="note"],
@@ -616,6 +729,27 @@ const getCSS = ({ fontSize,
     
     ${customCSSEnabled && customCSS ? customCSS : ''}
 `}
+
+const fixHeadingColor = (themeColor) => {
+  const headings = document.querySelectorAll('h1, h2, h3, h4, h5, h6')
+  const blackPatterns = [
+    /^#000000?$/i,
+    /^rgb\(\s*0\s*,\s*0\s*,\s*0\s*\)$/i,
+    /^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*1\s*\)$/i,
+    /^black$/i
+  ]
+  
+  headings.forEach(heading => {
+    const style = window.getComputedStyle(heading)
+    const color = style.color
+    
+    const isBlack = blackPatterns.some(pattern => pattern.test(color.trim()))
+    
+    if (isBlack) {
+      heading.style.setProperty('color', themeColor, 'important')
+    }
+  })
+}
 
 const convertChineseHandler = (mode, doc) => {
   console.log('convertChinese', mode)
@@ -759,6 +893,8 @@ const replaceFootnote = (view) => {
     customCSS: style.customCSS,
     customCSSEnabled: style.customCSSEnabled,
     writingMode: style.writingMode,
+    useBookStyles: style.useBookStyles,
+    headingFontSize: style.headingFontSize,
   }
   renderer.setStyles(getCSS(footNoteStyle))
   // set background color of dialog
@@ -782,6 +918,7 @@ class Reader {
     cfi: null,
     id: null,
   }
+  #ignoreBookmarkGesture = false
   constructor() {
     this.#footnoteHandler.addEventListener('before-render', e => {
       const { view } = e.detail
@@ -822,6 +959,15 @@ class Reader {
       const list = this.annotations.get(index)
       if (list) for (const annotation of list)
         this.view.addAnnotation(annotation)
+      
+      // Apply code highlighting to newly created overlay content
+      if (style && style.codeHighlightTheme && style.codeHighlightTheme !== 'off') {
+        // Get the document from the overlayer
+        const overlayerObj = view.renderer?.getContents()?.find(x => x.index === index && x.overlayer)
+        if (overlayerObj && overlayerObj.doc) {
+          applyCodeHighlighting(style.codeHighlightTheme, overlayerObj.doc)
+        }
+      }
     })
 
     view.addEventListener('draw-annotation', e => {
@@ -1000,6 +1146,12 @@ class Reader {
     this.#saveOriginalContent()
 
     this.readingFeatures(readingRules)
+    
+    // Apply code highlighting to newly loaded content
+    if (style && style.codeHighlightTheme && style.codeHighlightTheme !== 'off') {
+      // console.log('Applying code highlighting to loaded document, theme:', style.codeHighlightTheme)
+      applyCodeHighlighting(style.codeHighlightTheme, doc)
+    }
   }
 
   #onRelocate({ detail }) {
@@ -1145,6 +1297,13 @@ class Reader {
 
     this.#bookMarkExists = !!document.getElementById('bookmark-icon');
     this.#upTriggered = false;
+
+    // Check if touch started from the top 10% of the screen
+    // If so, disable bookmark gesture to avoid conflict with system control center
+    const touch = e.touch;
+    const screenHeight = window.innerHeight;
+    const startY = touch?.screenY ?? touch?.clientY ?? 0;
+    this.#ignoreBookmarkGesture = startY < screenHeight * 0.1;
   }
 
   #onTouchMove = ({ detail: e }) => {
@@ -1155,8 +1314,11 @@ class Reader {
       const deltaY = e.touchState.delta.y;
 
       if (deltaY > 0) {
-        mainView.style.transform = `translateY(${Math.sqrt(deltaY * 50)}px)`;
-        this.#showBookmarkIcon(deltaY);
+        // Only show bookmark pull-down UI if touch did not start from top 10%
+        if (!this.#ignoreBookmarkGesture) {
+          mainView.style.transform = `translateY(${Math.sqrt(deltaY * 50)}px)`;
+          this.#showBookmarkIcon(deltaY);
+        }
       } else if (deltaY < -60) {
         if (!this.#upTriggered) {
           this.#upTriggered = true;
@@ -1167,7 +1329,22 @@ class Reader {
   }
 
   #onTouchEnd = ({ detail: e }) => {
-    if (this.#ignoreTouch()) return;
+    if (this.#ignoreTouch()) {
+      if (e.touchState.direction === 'vertical') {
+        const renderer = this.view.renderer;
+        const scrollTop = renderer.shadowRoot.querySelector('#container').scrollTop;
+        const deltaY = e.touchState.delta.y;
+        const swipeThreshold = 60;
+
+        if (deltaY > swipeThreshold && scrollTop <= 1) {
+          renderer.shadowRoot.querySelector('#container').scrollTop = 0;
+          prevPage();
+        } else if (deltaY < -swipeThreshold && renderer.viewSize - renderer.end <= 1) {
+          nextPage();
+        }
+        return;
+      }
+    }
 
     const mainView = this.view.shadowRoot.children[0]
     if (e.touchState.direction === 'vertical') {
@@ -1176,12 +1353,15 @@ class Reader {
       if (deltaY < -60) {
         // console.log('UP');
       } else if (deltaY > 60) {
-        if (this.#bookMarkExists) {
-          this.#hideBookmarkIcon();
-          this.handleBookmark(true);
-        } else {
-          this.#showBookmarkIcon(deltaY);
-          this.handleBookmark(false);
+        // Only handle bookmark if touch did not start from top 10% of screen
+        if (!this.#ignoreBookmarkGesture) {
+          if (this.#bookMarkExists) {
+            this.#hideBookmarkIcon();
+            this.handleBookmark(true);
+          } else {
+            this.#showBookmarkIcon(deltaY);
+            this.handleBookmark(false);
+          }
         }
       } else {
         this.#hideBookmarkIcon();
@@ -1272,6 +1452,7 @@ class Reader {
     const totalPages = currentSectionPages / (nextSectionStart - currentSectionStart)
 
     const getFractionByHref = (href) => {
+      if (!href) return 0;
       href = href.split('#')[0]
       const section = sectionFractions.find(s => s.href === href)
       return section ? section.fraction : 0
@@ -1297,6 +1478,12 @@ const open = async (file, cfi) => {
   const reader = new Reader()
   globalThis.reader = reader
   await reader.open(file, cfi)
+  
+  // Initialize code highlighting if theme is set
+  if (style.codeHighlightTheme && style.codeHighlightTheme !== 'off') {
+    changeCodeHighlightTheme(style.codeHighlightTheme)
+  }
+  
   if (!importing) {
     callFlutter('onLoadEnd')
     onSetToc()
@@ -1338,7 +1525,11 @@ const setStyle = (oldStyle) => {
   reader.view.renderer.setAttribute('gap', `${style.sideMargin}%`)
   reader.view.renderer.setAttribute('background-color', style.backgroundColor)
   reader.view.renderer.setAttribute('max-column-count', style.maxColumnCount)
+  reader.view.renderer.setAttribute('column-threshold', `${style.columnThreshold}px`)
   reader.view.renderer.setAttribute('bgimg-url', style.backgroundImage)
+  reader.view.renderer.setAttribute('bgimg-blur', style.bgimgBlur ?? 0)
+  reader.view.renderer.setAttribute('bgimg-opacity', style.bgimgOpacity ?? 1)
+  reader.view.renderer.setAttribute('bgimg-fit', style.bgimgFit ?? 'cover')
 
   turn.animated ? reader.view.renderer.setAttribute('animated', 'true')
     : reader.view.renderer.removeAttribute('animated')
@@ -1361,9 +1552,15 @@ const setStyle = (oldStyle) => {
     backgroundImage: style.backgroundImage,
     flow: turn.scroll,
     customCSS: style.customCSS,
-    customCSSEnabled: style.customCSSEnabled
+    customCSSEnabled: style.customCSSEnabled,
+    useBookStyles: style.useBookStyles,
+    headingFontSize: style.headingFontSize
   }
   reader.view.renderer.setStyles?.(getCSS(newStyle))
+
+  if (!style.useBookStyles && style.fontColor) {
+    fixHeadingColor(style.fontColor)
+  }
 
   if (!oldStyle) {
     return
@@ -1444,12 +1641,14 @@ window.refreshToc = () => onSetToc()
 
 window.changeStyle = (newStyle) => {
   const oldStyle = style
-  style = {
-    ...style,
-    ...newStyle
-  }
+  style = { ...style, ...newStyle }
   console.log('changeStyle', JSON.stringify(style))
   setStyle(oldStyle)
+  
+  // Update code highlighting theme if changed
+  if (newStyle.codeHighlightTheme !== undefined) {
+    changeCodeHighlightTheme(newStyle.codeHighlightTheme)
+  }
 }
 
 window.goToHref = href => reader.view.goTo(href)
@@ -1516,6 +1715,24 @@ window.ttsStop = () => reader.view.initTTS(true)
 
 window.ttsHere = () => {
   initTts()
+  return reader.view.tts.from(reader.view.lastLocation.range)
+}
+
+window.ttsFromCfi = async (cfi) => {
+  initTts()
+  try {
+    const resolved = await reader.view.resolveNavigation(cfi)
+    if (resolved && resolved.anchor) {
+      const contents = reader.view.renderer.getContents()
+      const content = contents.find(c => c.index === resolved.index) || contents[0]
+      if (content && content.doc) {
+        const range = resolved.anchor(content.doc)
+        return reader.view.tts.from(range)
+      }
+    }
+  } catch (e) {
+    console.error(e)
+  }
   return reader.view.tts.from(reader.view.lastLocation.range)
 }
 
@@ -1618,6 +1835,367 @@ window.readingFeatures = (rules) => {
 
 window.pullUp = () => {
   callFlutter('onPullUp')
+}
+
+// Code highlighting management
+const CodeHighlighter = (() => {
+  // Private state
+  let currentTheme = null
+  let prismLoaded = false
+  let prismLoading = null // Promise for loading, to avoid duplicate loads
+  const LOAD_TIMEOUT = 10000 // 10 seconds timeout
+  const MAX_RETRIES = 2
+  const PRISM_BASE_PATH = '/foliate-js/src/vendor/prism'
+  
+  // Track which documents have been processed to avoid duplicate work
+  const processedDocs = new WeakSet()
+  
+  /**
+   * Load a script with timeout and retry support
+   */
+  const loadScript = (src, timeout = LOAD_TIMEOUT) => {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script')
+      script.src = src
+      
+      const timeoutId = setTimeout(() => {
+        reject(new Error(`Script load timeout: ${src}`))
+      }, timeout)
+      
+      script.onload = () => {
+        clearTimeout(timeoutId)
+        resolve()
+      }
+      
+      script.onerror = (error) => {
+        clearTimeout(timeoutId)
+        reject(new Error(`Failed to load script: ${src}`))
+      }
+      
+      document.head.appendChild(script)
+    })
+  }
+  
+  /**
+   * Load Prism.js library with retry support
+   */
+  const loadPrismLibrary = async (retryCount = 0) => {
+    if (prismLoaded) return true
+    
+    // If already loading, wait for that promise
+    if (prismLoading) {
+      return prismLoading
+    }
+    
+    prismLoading = (async () => {
+      try {
+        // Load Prism core
+        await loadScript(`${PRISM_BASE_PATH}/prism-core.min.js`)
+        // Load autoloader plugin
+        await loadScript(`${PRISM_BASE_PATH}/prism-autoloader.min.js`)
+        // Configure autoloader
+        if (window.Prism?.plugins?.autoloader) {
+          window.Prism.plugins.autoloader.languages_path = `${PRISM_BASE_PATH}/components/`
+        } else {
+          throw new Error('Prism autoloader not available after loading')
+        }
+        prismLoaded = true
+        return true
+      } catch (error) {
+        console.error('[CodeHighlighter] Load error:', error.message)
+        
+        if (retryCount < MAX_RETRIES) {
+          prismLoading = null
+          return loadPrismLibrary(retryCount + 1)
+        }
+        
+        console.error('[CodeHighlighter] Max retries reached, giving up')
+        prismLoading = null
+        return false
+      }
+    })()
+    
+    return prismLoading
+  }
+
+  /**
+   * Get theme CSS URL
+   */
+  const getThemeCssUrl = (theme) => {
+    if (!theme || theme === 'off') return null
+    const cssFile = theme === 'default' 
+      ? 'prism-default.min.css' 
+      : `prism-${theme}.min.css`
+    return new URL(`${PRISM_BASE_PATH}/themes/${cssFile}`, window.location.origin).href
+  }
+  
+  /**
+   * Inject or update theme CSS in a document
+   */
+  const injectThemeCss = (doc, theme) => {
+    if (!doc?.head) return false
+    
+    // Remove existing theme
+    const existingLink = doc.getElementById('prism-theme')
+    if (existingLink) {
+      existingLink.remove()
+    }
+    
+    if (!theme || theme === 'off') return true
+    
+    const cssUrl = getThemeCssUrl(theme)
+    if (!cssUrl) return false
+    
+    const link = doc.createElement('link')
+    link.id = 'prism-theme'
+    link.rel = 'stylesheet'
+    link.href = cssUrl
+    doc.head.appendChild(link)
+    
+    return true
+  }
+  
+  /**
+   * Detect programming language from element attributes and class names
+   */
+  const detectLanguage = (element) => {
+    // Check data-language attribute
+    const dataLang = element.getAttribute('data-language')
+    if (dataLang) return dataLang.toLowerCase()
+    
+    // Check class names for language-xxx pattern
+    const classMatch = element.className.match(/(?:^|\s)(?:language|lang)-(\w+)/)
+    if (classMatch) return classMatch[1].toLowerCase()
+    
+    // Check type attribute (some epub use this)
+    const typeAttr = element.getAttribute('type')
+    if (typeAttr) {
+      const typeMatch = typeAttr.match(/(?:text|application)\/(\w+)/)
+      if (typeMatch) return typeMatch[1].toLowerCase()
+    }
+    
+    // Check parent element for language hints
+    const parent = element.parentElement
+    if (parent) {
+      const parentLang = parent.getAttribute('data-language') || 
+                         parent.className.match(/(?:^|\s)(?:language|lang)-(\w+)/)?.[1]
+      if (parentLang) return parentLang.toLowerCase()
+    }
+    
+    // Default fallback - let Prism auto-detect or use plaintext
+    return null
+  }
+  
+  /**
+   * Highlight a single code block
+   */
+  const highlightBlock = (block, doc) => {
+    if (block.classList.contains('prism-highlighted')) return false
+    
+    try {
+      // Detect language
+      const lang = detectLanguage(block)
+      if (lang && !block.classList.contains(`language-${lang}`)) {
+        block.classList.add(`language-${lang}`)
+      }
+      
+      window.Prism.highlightElement(block)
+      block.classList.add('prism-highlighted')
+      return true
+    } catch (error) {
+      console.warn('[CodeHighlighter] Failed to highlight block:', error.message)
+      return false
+    }
+  }
+  
+  /**
+   * Convert <pre> blocks without <code> children to proper structure
+   */
+  const normalizePreBlock = (preBlock, doc) => {
+    if (preBlock.querySelector('code')) return null // Already has code child
+    if (preBlock.classList.contains('prism-highlighted')) return null
+    
+    const lang = detectLanguage(preBlock) || 'plaintext'
+    
+    // Create a code element and move content into it
+    const codeElement = doc.createElement('code')
+    codeElement.className = `language-${lang}`
+    codeElement.innerHTML = preBlock.innerHTML
+    preBlock.innerHTML = ''
+    preBlock.appendChild(codeElement)
+    preBlock.classList.add(`language-${lang}`)
+    
+    return codeElement
+  }
+  
+  /**
+   * Apply code highlighting to a document
+   * Uses requestIdleCallback for non-blocking processing of large code blocks
+   */
+  const applyHighlighting = async (theme, doc = document) => {
+    if (!theme || theme === 'off' || !doc) return
+    
+    // Skip if already processed and theme hasn't changed
+    if (processedDocs.has(doc) && theme === currentTheme) {
+      return
+    }
+    
+    // Find all code blocks
+    const preCodeBlocks = Array.from(doc.querySelectorAll('pre code'))
+    const preOnlyBlocks = Array.from(
+      doc.querySelectorAll('pre.snippet, pre.code, pre[class*="language-"], pre[data-language]')
+    )
+    
+    const totalBlocks = preCodeBlocks.length + preOnlyBlocks.length
+    if (totalBlocks === 0) {
+      processedDocs.add(doc)
+      return
+    }
+    
+    // Inject theme CSS for iframe documents
+    if (doc !== document) {
+      injectThemeCss(doc, theme)
+    }
+    
+    // Ensure Prism is loaded
+    const loaded = await loadPrismLibrary()
+    if (!loaded || !window.Prism) {
+      console.error('[CodeHighlighter] Prism not available, skipping highlighting')
+      return
+    }
+    
+    let highlightedCount = 0
+    
+    // Process pre-only blocks first (normalize to pre>code structure)
+    for (const preBlock of preOnlyBlocks) {
+      const codeElement = normalizePreBlock(preBlock, doc)
+      if (codeElement) {
+        preCodeBlocks.push(codeElement)
+      }
+    }
+    
+    // Highlight all code blocks
+    // For large numbers of blocks, use chunked processing to avoid blocking
+    const CHUNK_SIZE = 10
+    
+    for (let i = 0; i < preCodeBlocks.length; i += CHUNK_SIZE) {
+      const chunk = preCodeBlocks.slice(i, i + CHUNK_SIZE)
+      
+      for (const block of chunk) {
+        if (highlightBlock(block, doc)) {
+          highlightedCount++
+        }
+      }
+      
+      // Yield to the browser between chunks for large files
+      if (preCodeBlocks.length > CHUNK_SIZE && i + CHUNK_SIZE < preCodeBlocks.length) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+    }
+    
+    processedDocs.add(doc)
+  }
+
+  /**
+   * Get all iframe documents from the reader view
+   */
+  const getAllIframeDocs = () => {
+    const iframeDocs = []
+    
+    // Get documents from the reader's view renderer
+    if (globalThis.reader?.view?.renderer?.getContents) {
+      const contents = globalThis.reader.view.renderer.getContents() || []
+      contents.forEach((content, index) => {
+        if (content?.doc) {
+          iframeDocs.push({ doc: content.doc, name: `view-content-${index}` })
+        }
+      })
+    }
+    
+    // Fallback: query iframes directly
+    document.querySelectorAll('iframe').forEach((iframe, index) => {
+      try {
+        const doc = iframe.contentDocument || iframe.contentWindow?.document
+        if (doc && !iframeDocs.find(d => d.doc === doc)) {
+          iframeDocs.push({ doc, name: `iframe-${index}` })
+        }
+      } catch (e) {
+        // Cross-origin iframe, ignore
+      }
+    })
+    
+    return iframeDocs
+  }
+  
+  /**
+   * Change the code highlighting theme
+   */
+  const changeTheme = async (theme) => {
+    if (theme === currentTheme) return
+
+    const oldTheme = currentTheme
+    currentTheme = theme
+    
+    // Update main document
+    injectThemeCss(document, theme)
+    
+    if (theme === 'off') return
+    
+    // Update all iframe documents
+    const iframeDocs = getAllIframeDocs()
+    
+    for (const { doc, name } of iframeDocs) {
+      // Update theme CSS
+      injectThemeCss(doc, theme)
+      
+      // Clear processed flag to allow re-highlighting
+      processedDocs.delete(doc)
+      
+      // Clear prism-highlighted flags so blocks can be re-highlighted with new theme
+      doc.querySelectorAll('.prism-highlighted').forEach(el => {
+        el.classList.remove('prism-highlighted')
+      })
+      
+      // Re-apply highlighting
+      await applyHighlighting(theme, doc)
+    }
+  }
+  
+  /**
+   * Get current theme
+   */
+  const getTheme = () => currentTheme
+  
+  /**
+   * Check if Prism is loaded
+   */
+  const isLoaded = () => prismLoaded
+  
+  /**
+   * Reset processed state for a document (useful when content changes)
+   */
+  const resetDocument = (doc) => {
+    processedDocs.delete(doc)
+  }
+  
+  // Public API
+  return {
+    loadPrismLibrary,
+    applyHighlighting,
+    changeTheme,
+    getTheme,
+    isLoaded,
+    resetDocument,
+    injectThemeCss
+  }
+})()
+
+// Backward-compatible function aliases
+const applyCodeHighlighting = (theme, doc) => CodeHighlighter.applyHighlighting(theme, doc)
+const changeCodeHighlightTheme = (theme) => CodeHighlighter.changeTheme(theme)
+
+window.initCodeHighlighting = (theme) => {
+  changeCodeHighlightTheme(theme)
 }
 
 // get varible from url

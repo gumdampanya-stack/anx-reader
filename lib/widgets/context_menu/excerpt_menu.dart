@@ -2,8 +2,11 @@ import 'package:anx_reader/config/shared_preference_provider.dart';
 import 'package:anx_reader/constants/note_annotations.dart';
 import 'package:anx_reader/dao/book_note.dart';
 import 'package:anx_reader/l10n/generated/L10n.dart';
+import 'package:anx_reader/main.dart';
 import 'package:anx_reader/models/book_note.dart';
 import 'package:anx_reader/page/reading_page.dart';
+import 'package:anx_reader/service/tts/tts_handler.dart';
+import 'package:anx_reader/utils/env_var.dart';
 import 'package:anx_reader/utils/toast/common.dart';
 import 'package:anx_reader/widgets/book_share/excerpt_share_service.dart';
 import 'package:anx_reader/widgets/common/axis_flex.dart';
@@ -262,19 +265,19 @@ class ExcerptMenuState extends State<ExcerptMenu> {
         mainAxisSize: MainAxisSize.min,
         children: [
           // copy
-          InkWell(
+          IconAndText(
+            compact: true,
             onTap: () {
               Clipboard.setData(ClipboardData(text: widget.annoContent));
               AnxToast.show(L10n.of(context).notesPageCopied);
               widget.onClose();
             },
-            child: IconAndText(
-              icon: const Icon(EvaIcons.copy),
-              text: L10n.of(context).contextMenuCopy,
-            ),
+            icon: const Icon(EvaIcons.copy),
+            text: L10n.of(context).contextMenuCopy,
           ),
           // Web search
-          InkWell(
+          IconAndText(
+            compact: true,
             onTap: () {
               widget.onClose();
               launchUrl(
@@ -283,23 +286,46 @@ class ExcerptMenuState extends State<ExcerptMenu> {
                 mode: LaunchMode.externalApplication,
               );
             },
-            child: IconAndText(
-              icon: const Icon(EvaIcons.globe),
-              text: L10n.of(context).contextMenuSearch,
-            ),
+            icon: const Icon(EvaIcons.globe),
+            text: L10n.of(context).contextMenuSearch,
           ),
           // toggle translation menu
-          InkWell(
+          IconAndText(
+            compact: true,
             onTap: widget.toggleTranslationMenu,
-            child: IconAndText(
-              icon: const Icon(Icons.translate),
-              text: L10n.of(context).contextMenuTranslate,
-            ),
+            icon: const Icon(Icons.translate),
+            text: L10n.of(context).contextMenuTranslate,
+          ),
+          // narrate
+          IconAndText(
+            compact: true,
+            onTap: () async {
+              widget.onClose();
+              final playerState = epubPlayerKey.currentState;
+              if (playerState == null) return;
+
+              // Stop existing TTS playback if any
+              await audioHandler.stop();
+
+              // Now initialize TTS - it will use the current (updated) position
+              await TtsHandler().init(
+                () => playerState.initTts(fromCfi: widget.annoCfi),
+                playerState.ttsNext,
+                playerState.ttsPrev,
+              );
+
+              // Start TTS - audioHandler.play() will call TTS speak
+              await audioHandler.play();
+            },
+            icon: const Icon(Icons.headphones),
+            text: L10n.of(context).contextMenuNarrate,
           ),
           // edit note
           if (!widget.footnote)
-            InkWell(
+            IconAndText(
+              compact: true,
               onTap: () async {
+                epubPlayerKey.currentState?.setSelectionClearLocked(true);
                 await onColorSelected(annoColor, close: false);
                 final targetId = noteId ?? widget.id;
                 if (targetId != null) {
@@ -308,32 +334,31 @@ class ExcerptMenuState extends State<ExcerptMenu> {
                   widget.toggleReaderNoteMenu(show: true);
                 }
               },
-              child: IconAndText(
-                icon: const Icon(EvaIcons.edit_2_outline),
-                text: L10n.of(context).contextMenuWriteIdea,
-              ),
+              icon: const Icon(EvaIcons.edit_2_outline),
+              text: L10n.of(context).contextMenuWriteIdea,
             ),
           // AI chat
-          InkWell(
-            onTap: () {
-              widget.onClose();
-              final key = readingPageKey.currentState;
-              if (key != null) {
-                key.showAiChat(
-                  content: widget.annoContent,
-                  sendImmediate: false,
-                );
-                key.aiChatKey.currentState?.inputController.text =
-                    widget.annoContent;
-              }
-            },
-            child: IconAndText(
+          if (EnvVar.enableAIFeature)
+            IconAndText(
+              compact: true,
+              onTap: () {
+                widget.onClose();
+                final key = readingPageKey.currentState;
+                if (key != null) {
+                  key.showAiChat(
+                    content: widget.annoContent,
+                    sendImmediate: false,
+                  );
+                  key.aiChatKey.currentState?.inputController.text =
+                      widget.annoContent;
+                }
+              },
               icon: const Icon(EvaIcons.message_circle_outline),
               text: L10n.of(context).navBarAI,
             ),
-          ),
           // share
-          InkWell(
+          IconAndText(
+            compact: true,
             onTap: () {
               widget.onClose();
               ExcerptShareService.showShareExcerpt(
@@ -344,10 +369,8 @@ class ExcerptMenuState extends State<ExcerptMenu> {
                 chapter: epubPlayerKey.currentState!.chapterTitle,
               );
             },
-            child: IconAndText(
-              icon: const Icon(EvaIcons.share_outline),
-              text: L10n.of(context).contextMenuShare,
-            ),
+            icon: const Icon(EvaIcons.share_outline),
+            text: L10n.of(context).contextMenuShare,
           ),
         ],
       ),

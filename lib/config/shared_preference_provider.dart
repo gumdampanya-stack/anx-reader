@@ -9,12 +9,17 @@ import 'package:anx_reader/enums/convert_chinese_mode.dart';
 import 'package:anx_reader/enums/excerpt_share_template.dart';
 import 'package:anx_reader/enums/hint_key.dart';
 import 'package:anx_reader/enums/lang_list.dart';
+import 'package:anx_reader/enums/reading_info.dart';
 import 'package:anx_reader/enums/sort_field.dart';
 import 'package:anx_reader/enums/sort_order.dart';
 import 'package:anx_reader/enums/sync_protocol.dart';
 import 'package:anx_reader/enums/translation_mode.dart';
 import 'package:anx_reader/enums/writing_mode.dart';
 import 'package:anx_reader/enums/text_alignment.dart';
+import 'package:anx_reader/enums/ai_panel_position.dart';
+import 'package:anx_reader/enums/ai_chat_display_mode.dart';
+import 'package:anx_reader/enums/bgimg_fit.dart';
+import 'package:anx_reader/enums/code_highlight_theme.dart';
 import 'package:anx_reader/l10n/generated/L10n.dart';
 import 'package:anx_reader/main.dart';
 import 'package:anx_reader/models/bgimg.dart';
@@ -26,13 +31,13 @@ import 'package:anx_reader/models/book_notes_state.dart';
 import 'package:anx_reader/models/read_theme.dart';
 import 'package:anx_reader/models/reading_info.dart';
 import 'package:anx_reader/models/reading_rules.dart';
+import 'package:anx_reader/models/user_prompt.dart';
 import 'package:anx_reader/widgets/statistic/dashboard_tiles/dashboard_tile_registry.dart';
 import 'package:anx_reader/models/window_info.dart';
 import 'package:anx_reader/service/ai/tools/ai_tool_registry.dart';
 import 'package:anx_reader/service/translate/index.dart';
 import 'package:anx_reader/utils/get_current_language_code.dart';
 import 'package:anx_reader/utils/log/common.dart';
-import 'package:anx_reader/utils/tts_model_list.dart';
 import 'package:anx_reader/widgets/reading_page/style_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -64,6 +69,7 @@ class Prefs extends ChangeNotifier {
   static const String _chapterSplitCustomRulesKey = 'chapterSplitCustomRules';
   static const String _statisticsDashboardTilesKey = 'statisticsDashboardTiles';
   static const String _enabledAiToolsKey = 'enabledAiTools';
+  static const String _userPromptsKey = 'userPrompts';
 
   Future<void> initPrefs() async {
     prefs = await SharedPreferences.getInstance();
@@ -381,6 +387,15 @@ class Prefs extends ChangeNotifier {
     return prefs.getBool('hideStatusBar') ?? true;
   }
 
+  set autoHideBottomBar(bool status) {
+    prefs.setBool('autoHideBottomBar', status);
+    notifyListeners();
+  }
+
+  bool get autoHideBottomBar {
+    return prefs.getBool('autoHideBottomBar') ?? false;
+  }
+
   set awakeTime(int minutes) {
     prefs.setInt('awakeTime', minutes);
     notifyListeners();
@@ -455,46 +470,54 @@ class Prefs extends ChangeNotifier {
     return prefs.getDouble('ttsRate') ?? 0.6;
   }
 
-  set ttsVoiceModel(String shortName) {
-    prefs.setString('ttsVoiceModel', shortName);
+  void setTtsVoiceModel(String serviceId, String shortName) {
+    prefs.setString('ttsVoiceModel_$serviceId', shortName);
     notifyListeners();
   }
 
-  void removeTtsVoiceModel() {
-    prefs.remove('ttsVoiceModel');
+  void removeTtsVoiceModel(String serviceId) {
+    prefs.remove('ttsVoiceModel_$serviceId');
     notifyListeners();
   }
 
-  String get ttsVoiceModel {
-    String? model = prefs.getString('ttsVoiceModel');
-    if (model == null) {
-      final languageCode = getCurrentLanguageCode().toLowerCase();
+  String getTtsVoiceModel(String serviceId) {
+    return prefs.getString('ttsVoiceModel_$serviceId') ?? '';
+  }
 
-      final data = ttsModelList;
+  set ttsService(String serviceId) {
+    prefs.setString('ttsService', serviceId);
+    notifyListeners();
+  }
 
-      for (var voice in data) {
-        String voiceLocale = voice['Locale'] as String;
-        if (voiceLocale.toLowerCase().startsWith(languageCode.toLowerCase())) {
-          model = voice['ShortName'] as String;
-          break;
-        }
-      }
+  String get ttsService {
+    String? service = prefs.getString('ttsService');
+    if (service != null) return service;
 
-      if (model == null || model.isEmpty) {
-        for (var voice in data) {
-          String voiceLocale = voice['Locale'] as String;
-          if (voiceLocale.startsWith('en-')) {
-            model = voice['ShortName'] as String;
-            break;
-          }
-        }
-      }
-
-      if (model == null || model.isEmpty) {
-        model = 'en-US-JennyNeural';
-      }
+    // Migration/Fallback
+    bool isSystem = prefs.getBool('isSystemTts') ??
+        true; // Default to system if nothing set
+    if (!isSystem) {
+      // Check if there was an online service set
+      String? online = prefs.getString('onlineTtsService');
+      if (online != null) return online;
     }
-    return model;
+    return 'system';
+  }
+
+  Map<String, dynamic> getOnlineTtsConfig(String serviceId) {
+    String? json = prefs.getString('onlineTtsConfig_$serviceId');
+    if (json == null) return {};
+    try {
+      return jsonDecode(json) as Map<String, dynamic>;
+    } catch (e) {
+      return {};
+    }
+  }
+
+  Future<void> saveOnlineTtsConfig(
+      String serviceId, Map<String, dynamic> config) async {
+    await prefs.setString('onlineTtsConfig_$serviceId', jsonEncode(config));
+    notifyListeners();
   }
 
   set pageTurnStyle(PageTurn style) {
@@ -548,7 +571,7 @@ class Prefs extends ChangeNotifier {
 
   TranslateService get translateService {
     return getTranslateService(
-        prefs.getString('translateService') ?? 'microsoft');
+        prefs.getString('translateService') ?? 'bingWeb');
   }
 
   set translateFrom(LangListEnum from) {
@@ -575,7 +598,16 @@ class Prefs extends ChangeNotifier {
   }
 
   bool get autoTranslateSelection {
-    return prefs.getBool('autoTranslateSelection') ?? true;
+    return prefs.getBool('autoTranslateSelection') ?? false;
+  }
+
+  set autoMarkSelection(bool status) {
+    prefs.setBool('autoMarkSelection', status);
+    notifyListeners();
+  }
+
+  bool get autoMarkSelection {
+    return prefs.getBool('autoMarkSelection') ?? false;
   }
 
   set fullTextTranslateService(TranslateService service) {
@@ -584,8 +616,13 @@ class Prefs extends ChangeNotifier {
   }
 
   TranslateService get fullTextTranslateService {
-    return getTranslateService(
-        prefs.getString('fullTextTranslateService') ?? 'microsoft');
+    final serviceName =
+        prefs.getString('fullTextTranslateService') ?? 'microsoftApi';
+    if (serviceName == 'microsoft') {
+      prefs.setString('fullTextTranslateService', 'microsoftApi');
+      return TranslateService.microsoftApi;
+    }
+    return getTranslateService(serviceName);
   }
 
   set fullTextTranslateFrom(LangListEnum from) {
@@ -605,6 +642,23 @@ class Prefs extends ChangeNotifier {
   LangListEnum get fullTextTranslateTo {
     return getLang(
         prefs.getString('fullTextTranslateTo') ?? getCurrentLanguageCode());
+  }
+
+  set aiRpm(int rpm) {
+    prefs.setInt('aiRpm', rpm);
+    notifyListeners();
+  }
+
+  /// Maximum AI requests per minute across all AI features. 0 means unlimited.
+  int get aiRpm {
+    // Migrate from old fullTextTranslateRpm key if present
+    final legacy = prefs.getInt('fullTextTranslateRpm');
+    if (legacy != null) {
+      prefs.setInt('aiRpm', legacy);
+      prefs.remove('fullTextTranslateRpm');
+      return legacy;
+    }
+    return prefs.getInt('aiRpm') ?? 0;
   }
 
   // set convertChineseMode(ConvertChineseMode mode) {
@@ -758,6 +812,18 @@ class Prefs extends ChangeNotifier {
     return WindowInfo.fromJson(jsonDecode(windowInfoJson));
   }
 
+  /// Custom storage path for Windows/macOS
+  String? get customStoragePath => prefs.getString('customStoragePath');
+
+  set customStoragePath(String? value) {
+    if (value == null) {
+      prefs.remove('customStoragePath');
+    } else {
+      prefs.setString('customStoragePath', value);
+    }
+    notifyListeners();
+  }
+
   void saveAiConfig(String identifier, Map<String, String> config) {
     prefs.setString('aiConfig_$identifier', jsonEncode(config));
     notifyListeners();
@@ -784,6 +850,33 @@ class Prefs extends ChangeNotifier {
   void deleteAiConfig(String identifier) {
     prefs.remove('aiConfig_$identifier');
     notifyListeners();
+  }
+
+  void saveAiProviders(List<dynamic> providers) {
+    final jsonList = providers.map((p) {
+      // Handle both AiProvider objects and already-serialized maps
+      if (p is Map<String, dynamic>) {
+        return p;
+      } else {
+        return p.toJson();
+      }
+    }).toList();
+    prefs.setString('aiProviders', jsonEncode(jsonList));
+    notifyListeners();
+  }
+
+  List<dynamic> getAiProviders() {
+    String? jsonString = prefs.getString('aiProviders');
+    if (jsonString == null) {
+      return [];
+    }
+    try {
+      final List<dynamic> decoded = jsonDecode(jsonString);
+      // Import will be handled in ai_providers.dart to avoid circular dependency
+      return decoded;
+    } catch (e) {
+      return [];
+    }
   }
 
   void saveAiPrompt(AiPrompts identifier, String prompt) {
@@ -870,6 +963,28 @@ class Prefs extends ChangeNotifier {
     return prefs.getBool('autoAdjustReadingTheme') ?? false;
   }
 
+  // User prompts - simple read/write methods
+  List<UserPrompt> get userPrompts {
+    final jsonString = prefs.getString(_userPromptsKey);
+    if (jsonString == null || jsonString.isEmpty) return [];
+
+    try {
+      final List<dynamic> jsonList = jsonDecode(jsonString);
+      return jsonList
+          .map((json) => UserPrompt.fromJson(json as Map<String, dynamic>))
+          .toList();
+    } catch (e) {
+      AnxLog.severe('Error loading user prompts: $e');
+      return [];
+    }
+  }
+
+  set userPrompts(List<UserPrompt> prompts) {
+    final jsonList = prompts.map((p) => p.toJson()).toList();
+    prefs.setString(_userPromptsKey, jsonEncode(jsonList));
+    notifyListeners();
+  }
+
   set maxAiCacheCount(int count) {
     prefs.setInt('maxAiCacheCount', count);
     notifyListeners();
@@ -877,6 +992,15 @@ class Prefs extends ChangeNotifier {
 
   int get maxAiCacheCount {
     return prefs.getInt('maxAiCacheCount') ?? 300;
+  }
+
+  set aiChatFontSize(double size) {
+    prefs.setDouble('aiChatFontSize', size);
+    notifyListeners();
+  }
+
+  double get aiChatFontSize {
+    return prefs.getDouble('aiChatFontSize') ?? 14.0;
   }
 
   set volumeKeyTurnPage(bool status) {
@@ -888,12 +1012,64 @@ class Prefs extends ChangeNotifier {
     return prefs.getBool('volumeKeyTurnPage') ?? false;
   }
 
+  set keyboardShortcutTurnPage(bool status) {
+    prefs.setBool('keyboardShortcutTurnPage', status);
+    notifyListeners();
+  }
+
+  bool get keyboardShortcutTurnPage {
+    return prefs.getBool('keyboardShortcutTurnPage') ?? false;
+  }
+
   set swapPageTurnArea(bool status) {
     prefs.setBool('swapPageTurnArea', status);
   }
 
   bool get swapPageTurnArea {
     return prefs.getBool('swapPageTurnArea') ?? false;
+  }
+
+  set showMenuOnHover(bool status) {
+    prefs.setBool('showMenuOnHover', status);
+    notifyListeners();
+  }
+
+  bool get showMenuOnHover {
+    return prefs.getBool('showMenuOnHover') ?? true;
+  }
+
+  set showActionLabels(bool status) {
+    prefs.setBool('showActionLabels', status);
+    notifyListeners();
+  }
+
+  bool get showActionLabels {
+    return prefs.getBool('showActionLabels') ?? true;
+  }
+
+  set pageTurnMode(String mode) {
+    prefs.setString('pageTurnMode', mode);
+    notifyListeners();
+  }
+
+  String get pageTurnMode {
+    return prefs.getString('pageTurnMode') ?? 'simple';
+  }
+
+  set customPageTurnConfig(List<int> config) {
+    prefs.setString('customPageTurnConfig', config.join(','));
+    notifyListeners();
+  }
+
+  List<int> get customPageTurnConfig {
+    String? configStr = prefs.getString('customPageTurnConfig');
+    if (configStr == null) {
+      // Default: left column = prev (1), middle column = menu (3), right column = next (2)
+      // Index mapping: 0=none, 1=next, 2=prev, 3=menu
+      // Grid layout: 0,1,2,3,4,5,6,7,8 (row by row)
+      return [2, 3, 1, 2, 3, 1, 2, 3, 1]; // prev, menu, next for all rows
+    }
+    return configStr.split(',').map((e) => int.parse(e)).toList();
   }
 
   set bookCoverWidth(double width) {
@@ -917,6 +1093,24 @@ class Prefs extends ChangeNotifier {
     );
   }
 
+  set showBookTitleOnDefaultCover(bool status) {
+    prefs.setBool('showBookTitleOnDefaultCover', status);
+    notifyListeners();
+  }
+
+  bool get showBookTitleOnDefaultCover {
+    return prefs.getBool('showBookTitleOnDefaultCover') ?? true;
+  }
+
+  set showAuthorOnDefaultCover(bool status) {
+    prefs.setBool('showAuthorOnDefaultCover', status);
+    notifyListeners();
+  }
+
+  bool get showAuthorOnDefaultCover {
+    return prefs.getBool('showAuthorOnDefaultCover') ?? true;
+  }
+
   set openBookAnimation(bool status) {
     prefs.setBool('openBookAnimation', status);
     notifyListeners();
@@ -933,6 +1127,15 @@ class Prefs extends ChangeNotifier {
 
   bool get onlySyncWhenWifi {
     return prefs.getBool('onlySyncWhenWifi') ?? false;
+  }
+
+  set useBookStyles(bool status) {
+    prefs.setBool('useBookStyles', status);
+    notifyListeners();
+  }
+
+  bool get useBookStyles {
+    return prefs.getBool('useBookStyles') ?? false;
   }
 
   set bottomNavigatorShowNote(bool status) {
@@ -990,11 +1193,52 @@ class Prefs extends ChangeNotifier {
     if (readingInfoJson == null) {
       return ReadingInfoModel();
     }
-    return ReadingInfoModel.fromJson(jsonDecode(readingInfoJson));
-  }
+    final Map<String, dynamic> json =
+        Map<String, dynamic>.from(jsonDecode(readingInfoJson));
+    if (json.containsKey('header') || json.containsKey('footer')) {
+      return ReadingInfoModel.fromJson(json);
+    }
 
-  bool get isSystemTts {
-    return prefs.getBool('isSystemTts') ?? false;
+    return ReadingInfoModel(
+      header: ReadingInfoSectionModel(
+        left: _decodeReadingInfoEnum(
+          json['headerLeft'],
+          ReadingInfoEnum.chapterTitle,
+        ),
+        center: _decodeReadingInfoEnum(
+          json['headerCenter'],
+          ReadingInfoEnum.none,
+        ),
+        right: _decodeReadingInfoEnum(
+          json['headerRight'],
+          ReadingInfoEnum.none,
+        ),
+        verticalMargin: prefs.getDouble('pageHeaderMargin') ??
+            MediaQuery.of(navigatorKey.currentContext!).padding.bottom,
+        leftMargin: prefs.getDouble('pageHeaderLeftMargin') ?? 20,
+        rightMargin: prefs.getDouble('pageHeaderRightMargin') ?? 20,
+        fontSize: prefs.getDouble('pageHeaderFontSize') ?? 10,
+      ),
+      footer: ReadingInfoSectionModel(
+        left: _decodeReadingInfoEnum(
+          json['footerLeft'],
+          ReadingInfoEnum.batteryAndTime,
+        ),
+        center: _decodeReadingInfoEnum(
+          json['footerCenter'],
+          ReadingInfoEnum.chapterProgress,
+        ),
+        right: _decodeReadingInfoEnum(
+          json['footerRight'],
+          ReadingInfoEnum.bookProgress,
+        ),
+        verticalMargin: prefs.getDouble('pageFooterMargin') ??
+            MediaQuery.of(navigatorKey.currentContext!).padding.bottom,
+        leftMargin: prefs.getDouble('pageFooterLeftMargin') ?? 20,
+        rightMargin: prefs.getDouble('pageFooterRightMargin') ?? 20,
+        fontSize: prefs.getDouble('pageFooterFontSize') ?? 10,
+      ),
+    );
   }
 
   set isSystemTts(bool status) {
@@ -1246,26 +1490,6 @@ class Prefs extends ChangeNotifier {
     notifyListeners();
   }
 
-  double get pageHeaderMargin {
-    return prefs.getDouble('pageHeaderMargin') ??
-        MediaQuery.of(navigatorKey.currentContext!).padding.bottom;
-  }
-
-  set pageHeaderMargin(double margin) {
-    prefs.setDouble('pageHeaderMargin', margin);
-    notifyListeners();
-  }
-
-  double get pageFooterMargin {
-    return prefs.getDouble('pageFooterMargin') ??
-        MediaQuery.of(navigatorKey.currentContext!).padding.bottom;
-  }
-
-  set pageFooterMargin(double margin) {
-    prefs.setDouble('pageFooterMargin', margin);
-    notifyListeners();
-  }
-
   String? get lastAppVersion {
     return prefs.getString('lastAppVersion');
   }
@@ -1347,4 +1571,77 @@ class Prefs extends ChangeNotifier {
     prefs.setString('textAlignment', alignment.code);
     notifyListeners();
   }
+
+  BgimgFitEnum get bgimgFit {
+    return BgimgFitEnum.fromCode(prefs.getString('bgimgFit') ?? 'cover');
+  }
+
+  set bgimgFit(BgimgFitEnum fit) {
+    prefs.setString('bgimgFit', fit.code);
+    notifyListeners();
+  }
+
+  AiPanelPositionEnum get aiPanelPosition {
+    return AiPanelPositionEnum.fromCode(
+        prefs.getString('aiPanelPosition') ?? 'right');
+  }
+
+  set aiPanelPosition(AiPanelPositionEnum position) {
+    prefs.setString('aiPanelPosition', position.code);
+    notifyListeners();
+  }
+
+  CodeHighlightThemeEnum get codeHighlightTheme {
+    return CodeHighlightThemeEnum.fromCode(
+        prefs.getString('codeHighlightTheme') ?? 'default');
+  }
+
+  set codeHighlightTheme(CodeHighlightThemeEnum theme) {
+    prefs.setString('codeHighlightTheme', theme.code);
+    notifyListeners();
+  }
+
+  // AI chat display mode configuration
+  AiChatDisplayMode get aiChatDisplayMode {
+    return AiChatDisplayMode.fromCode(
+        prefs.getString('aiChatDisplayMode') ?? 'adaptive');
+  }
+
+  set aiChatDisplayMode(AiChatDisplayMode mode) {
+    prefs.setString('aiChatDisplayMode', mode.code);
+    notifyListeners();
+  }
+
+  // AI panel width (for split mode)
+  double get aiPanelWidth {
+    return prefs.getDouble('aiPanelWidth') ?? 300;
+  }
+
+  set aiPanelWidth(double width) {
+    prefs.setDouble('aiPanelWidth', width);
+    notifyListeners();
+  }
+
+  // AI panel height (for split mode)
+  double get aiPanelHeight {
+    return prefs.getDouble('aiPanelHeight') ?? 300;
+  }
+
+  set aiPanelHeight(double height) {
+    prefs.setDouble('aiPanelHeight', height);
+    notifyListeners();
+  }
+}
+
+ReadingInfoEnum _decodeReadingInfoEnum(
+  Object? value,
+  ReadingInfoEnum fallback,
+) {
+  if (value is! String) return fallback;
+  for (final item in ReadingInfoEnum.values) {
+    if (item.name == value) {
+      return item;
+    }
+  }
+  return fallback;
 }

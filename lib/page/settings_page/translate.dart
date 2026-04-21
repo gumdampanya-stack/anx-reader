@@ -4,11 +4,12 @@ import 'package:anx_reader/l10n/generated/L10n.dart';
 import 'package:anx_reader/service/translate/index.dart';
 import 'package:anx_reader/utils/toast/common.dart';
 import 'package:anx_reader/widgets/common/container/filled_container.dart';
+import 'package:anx_reader/widgets/settings/service_config_form.dart';
+import 'package:anx_reader/widgets/settings/settings_section.dart';
 import 'package:anx_reader/widgets/settings/settings_tile.dart';
 import 'package:anx_reader/widgets/settings/settings_title.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
-import 'package:anx_reader/widgets/settings/settings_section.dart';
 
 class TranslateSetting extends StatefulWidget {
   const TranslateSetting({super.key});
@@ -118,7 +119,7 @@ class _TranslateSettingState extends State<TranslateSetting> {
         SettingsSection(
           title: Text(L10n.of(context).translationServiceConfiguration),
           tiles: [
-            for (var service in TranslateService.values)
+            for (var service in TranslateService.activeValues)
               CustomSettingsTile(
                 child: TranslateSettingItem(service: service),
               ),
@@ -156,7 +157,7 @@ class TranslationConfig extends StatelessWidget {
                 });
               },
               child: Text(
-                Prefs().translateService.label,
+                Prefs().translateService.getLabel(context),
                 style: currentServiceTextStyle,
               ),
             ),
@@ -233,7 +234,7 @@ class FullTextTranslationConfig extends StatelessWidget {
                 });
               },
               child: Text(
-                Prefs().fullTextTranslateService.label,
+                Prefs().fullTextTranslateService.getLabel(context),
                 style: currentServiceTextStyle,
               ),
             ),
@@ -289,14 +290,17 @@ class TranslateServicePicker extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListView.builder(
-      itemCount: TranslateService.values.length,
-      itemBuilder: (context, index) => ListTile(
-        title: Text(TranslateService.values[index].label),
-        onTap: () {
-          Prefs().translateService = TranslateService.values[index];
-          Navigator.pop(context);
-        },
-      ),
+      itemCount: TranslateService.activeValues.length,
+      itemBuilder: (context, index) {
+        final service = TranslateService.activeValues.elementAt(index);
+        return ListTile(
+          title: Text(service.getLabel(context)),
+          onTap: () {
+            Prefs().translateService = service;
+            Navigator.pop(context);
+          },
+        );
+      },
     );
   }
 }
@@ -306,12 +310,15 @@ class FullTextTranslateServicePicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final services =
+        TranslateService.activeValues.where((s) => !s.isWebView).toList();
+
     return ListView.builder(
-      itemCount: TranslateService.values.length,
+      itemCount: services.length,
       itemBuilder: (context, index) => ListTile(
-        title: Text(TranslateService.values[index].label),
+        title: Text(services[index].getLabel(context)),
         onTap: () {
-          Prefs().fullTextTranslateService = TranslateService.values[index];
+          Prefs().fullTextTranslateService = services[index];
           Navigator.pop(context);
         },
       ),
@@ -395,156 +402,6 @@ class _TranslateSettingItemState extends State<TranslateSettingItem> {
     );
   }
 
-  Widget _buildConfigItem(ConfigItem item) {
-    switch (item.type) {
-      case ConfigItemType.text:
-      case ConfigItemType.password:
-        return TextField(
-          obscureText: item.type == ConfigItemType.password,
-          decoration: InputDecoration(
-            labelText: item.label,
-            helperText: item.description,
-            border: const OutlineInputBorder(),
-          ),
-          controller: TextEditingController(
-              text: _currentConfig[item.key]?.toString() ??
-                  item.defaultValue?.toString() ??
-                  ''),
-          onChanged: (value) {
-            _currentConfig[item.key] = value;
-          },
-        );
-
-      case ConfigItemType.number:
-        return TextField(
-          decoration: InputDecoration(
-            labelText: item.label,
-            helperText: item.description,
-            border: const OutlineInputBorder(),
-          ),
-          keyboardType: TextInputType.number,
-          controller: TextEditingController(
-              text: _currentConfig[item.key]?.toString() ??
-                  item.defaultValue?.toString() ??
-                  ''),
-          onChanged: (value) {
-            _currentConfig[item.key] = int.tryParse(value) ?? 0;
-          },
-        );
-
-      case ConfigItemType.toggle:
-        return SwitchListTile(
-          title: Text(item.label),
-          subtitle: item.description != null ? Text(item.description!) : null,
-          value: _currentConfig[item.key] ?? item.defaultValue ?? false,
-          onChanged: (value) {
-            setState(() {
-              _currentConfig[item.key] = value;
-            });
-          },
-        );
-
-      case ConfigItemType.select:
-        if (item.options == null || item.options!.isEmpty) {
-          return const Text('None options');
-        }
-
-        final String currentValue = _currentConfig[item.key]?.toString() ??
-            item.defaultValue?.toString() ??
-            item.options!.first['value']?.toString() ??
-            '';
-
-        return DropdownButtonFormField<String>(
-          decoration: InputDecoration(
-            labelText: item.label,
-            helperText: item.description,
-            border: const OutlineInputBorder(),
-          ),
-          initialValue: currentValue,
-          items: item.options!.map((option) {
-            return DropdownMenuItem<String>(
-              value: option['value'].toString(),
-              child: Text(option['label'].toString()),
-            );
-          }).toList(),
-          onChanged: (value) {
-            if (value != null) {
-              setState(() {
-                _currentConfig[item.key] = value;
-              });
-            }
-          },
-        );
-
-      case ConfigItemType.radio:
-        if (item.options == null || item.options!.isEmpty) {
-          return const Text('None options');
-        }
-
-        final currentValue = _currentConfig[item.key] ?? item.defaultValue;
-
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8.0),
-              child: Text(
-                item.label,
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-            if (item.description != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8.0),
-                child: Text(item.description!),
-              ),
-            ...item.options!.map((option) {
-              return RadioListTile<dynamic>(
-                title: Text(option['label'].toString()),
-                value: option['value'],
-                groupValue: currentValue,
-                onChanged: (value) {
-                  setState(() {
-                    _currentConfig[item.key] = value;
-                  });
-                },
-              );
-            }),
-          ],
-        );
-
-      case ConfigItemType.checkbox:
-        return CheckboxListTile(
-          title: Text(item.label),
-          subtitle: item.description != null ? Text(item.description!) : null,
-          value: _currentConfig[item.key] ?? item.defaultValue ?? false,
-          onChanged: (value) {
-            if (value != null) {
-              setState(() {
-                _currentConfig[item.key] = value;
-              });
-            }
-          },
-        );
-      case ConfigItemType.tip:
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 8.0),
-          child: Row(
-            children: [
-              Icon(
-                Icons.info_outline,
-              ),
-              Expanded(
-                child: Text(
-                  item.defaultValue.toString(),
-                ),
-              ),
-            ],
-          ),
-        );
-    }
-  }
-
   void _saveConfig() {
     try {
       saveTranslateServiceConfig(widget.service, _currentConfig);
@@ -556,7 +413,7 @@ class _TranslateSettingItemState extends State<TranslateSettingItem> {
 
   @override
   Widget build(BuildContext context) {
-    final configItems = getTranslateServiceConfigItems(widget.service);
+    final configItems = getTranslateServiceConfigItems(context, widget.service);
 
     return Card(
       margin: const EdgeInsets.all(10),
@@ -569,7 +426,7 @@ class _TranslateSettingItemState extends State<TranslateSettingItem> {
         children: [
           ListTile(
             leading: const Icon(Icons.translate_outlined),
-            title: Text(widget.service.label),
+            title: Text(widget.service.getLabel(context)),
             onTap: () {
               setState(() {
                 isExpanded = !isExpanded;
@@ -586,12 +443,13 @@ class _TranslateSettingItemState extends State<TranslateSettingItem> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        ...configItems.map((item) {
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 8.0),
-                            child: _buildConfigItem(item),
-                          );
-                        }),
+                        ServiceConfigForm(
+                          configItems: configItems,
+                          initialConfig: _currentConfig,
+                          onConfigChanged: (newConfig) {
+                            _currentConfig = newConfig;
+                          },
+                        ),
                         const Divider(),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.end,

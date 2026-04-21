@@ -9,15 +9,37 @@ import 'package:flutter/material.dart';
 class TtsHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   final TtsFactory _ttsFactory = TtsFactory();
 
-  TtsHandler() {
+  static final TtsHandler _instance = TtsHandler._internal();
+
+  factory TtsHandler() {
+    return _instance;
+  }
+
+  TtsHandler._internal() {
     _initAudioSession();
   }
 
   BaseTts get tts => _ttsFactory.current;
 
+  Function? _getCurrentText;
+  Function? _getNextText;
+  Function? _getPrevText;
+
   Future<void> init(Function getCurrentText, Function getNextText,
       Function getPrevText) async {
+    _getCurrentText = getCurrentText;
+    _getNextText = getNextText;
+    _getPrevText = getPrevText;
     await tts.init(getCurrentText, getNextText, getPrevText);
+  }
+
+  Future<void> switchTtsType(String serviceId) async {
+    await _ttsFactory.switchTtsType(serviceId);
+    if (_getCurrentText != null &&
+        _getNextText != null &&
+        _getPrevText != null) {
+      await tts.init(_getCurrentText!, _getNextText!, _getPrevText!);
+    }
   }
 
   Future<void> _initAudioSession() async {
@@ -66,13 +88,32 @@ class TtsHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       ));
     }
 
-    mediaItem.add(MediaItem(
+    final item = MediaItem(
       id: epubPlayerKey.currentState!.chapterTitle,
       title: epubPlayerKey.currentState!.chapterTitle,
       album: epubPlayerKey.currentState!.book.title,
       artist: epubPlayerKey.currentState!.book.author,
+      // Use -1 to tell system not to render a progress bar.
+      duration: const Duration(milliseconds: -1),
       artUri: Uri.tryParse(
           'file://${epubPlayerKey.currentState!.book.coverFullPath}'),
+    );
+
+    // Ensure system receives queue + active index for control center metadata.
+    queue.add([item]);
+    mediaItem.add(item);
+    playbackState.add(playbackState.value.copyWith(
+      controls: [
+        MediaControl.skipToPrevious,
+        MediaControl.pause,
+        MediaControl.stop,
+        MediaControl.skipToNext,
+      ],
+      processingState: AudioProcessingState.ready,
+      playing: true,
+      queueIndex: 0,
+      updatePosition: Duration.zero,
+      bufferedPosition: Duration.zero,
     ));
     if (tts.ttsStateNotifier.value == TtsStateEnum.paused) {
       tts.updateTtsState(TtsStateEnum.playing);
@@ -87,6 +128,7 @@ class TtsHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   Future<void> pause() async {
     playbackState.add(playbackState.value.copyWith(
       controls: [MediaControl.play, MediaControl.stop],
+      queueIndex: queue.value.isNotEmpty ? 0 : null,
       processingState: AudioProcessingState.ready,
       playing: false,
     ));
@@ -99,6 +141,7 @@ class TtsHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   Future<void> stop() async {
     playbackState.add(playbackState.value.copyWith(
       controls: [],
+      queueIndex: null,
       processingState: AudioProcessingState.idle,
       playing: false,
     ));
@@ -108,16 +151,22 @@ class TtsHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     epubPlayerKey.currentState?.ttsStop();
   }
 
+  @override
+  Future<void> skipToNext() async {
+    await playNext();
+  }
+
+  @override
+  Future<void> skipToPrevious() async {
+    await playPrevious();
+  }
+
   Future<void> playPrevious() async {
     await tts.prev();
   }
 
   Future<void> playNext() async {
     await tts.next();
-  }
-
-  Future<void> switchTtsType(bool useSystemTts) async {
-    await _ttsFactory.switchTtsType(useSystemTts);
   }
 
   ValueNotifier<TtsStateEnum> get ttsStateNotifier => tts.ttsStateNotifier;

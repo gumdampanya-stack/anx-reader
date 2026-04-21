@@ -16,6 +16,7 @@ import 'package:anx_reader/service/book.dart';
 import 'package:anx_reader/page/search/search_page.dart';
 import 'package:anx_reader/utils/get_path/get_temp_dir.dart';
 import 'package:anx_reader/utils/color/hash_color.dart';
+import 'package:anx_reader/utils/platform_utils.dart';
 import 'package:anx_reader/utils/log/common.dart';
 import 'package:anx_reader/widgets/bookshelf/book_bottom_sheet.dart';
 import 'package:anx_reader/widgets/bookshelf/book_folder.dart';
@@ -88,7 +89,7 @@ class BookshelfPageState extends ConsumerState<BookshelfPage>
     // FilePicker on Windows will return files with original path,
     // but on Android it will return files with temporary path.
     // So we need to save the files to the temp directory.
-    if (!Platform.isAndroid) {
+    if (!AnxPlatform.isAndroid) {
       fileList = await Future.wait(files.map((file) async {
         return _copyToTempFile(sourcePath: file.path!, fileName: file.name);
       }).toList());
@@ -226,6 +227,29 @@ class BookshelfPageState extends ConsumerState<BookshelfPage>
                                 L10n.of(context).tagsEmptyHint,
                                 style: Theme.of(context).textTheme.bodyMedium,
                               ),
+                            // "No tag" virtual option - only show when there are tags
+                            if (tags.isNotEmpty)
+                              TagChip(
+                                label: L10n.of(context).noTagFilter,
+                                color: Colors.grey,
+                                selected: liveSelected.contains(kNoTagFilterId),
+                                onTap: () {
+                                  setStateMenu(() {
+                                    if (liveSelected.contains(kNoTagFilterId)) {
+                                      liveSelected.remove(kNoTagFilterId);
+                                    } else {
+                                      // Mutual exclusion: clear other tags when selecting "no tag"
+                                      liveSelected.clear();
+                                      liveSelected.add(kNoTagFilterId);
+                                    }
+                                  });
+                                  ref
+                                      .read(tagSelectionProvider.notifier)
+                                      .toggle(kNoTagFilterId);
+                                  ref.read(bookListProvider.notifier).refresh();
+                                },
+                                dense: false,
+                              ),
                             for (final tag in tags)
                               TagChip(
                                 label: tag.name,
@@ -236,6 +260,8 @@ class BookshelfPageState extends ConsumerState<BookshelfPage>
                                     if (liveSelected.contains(tag.id)) {
                                       liveSelected.remove(tag.id);
                                     } else {
+                                      // Mutual exclusion: clear "no tag" when selecting a regular tag
+                                      liveSelected.remove(kNoTagFilterId);
                                       liveSelected.add(tag.id);
                                     }
                                   });
@@ -266,7 +292,30 @@ class BookshelfPageState extends ConsumerState<BookshelfPage>
       final selectedTagWidgets = tagsAsync.when(
         data: (tags) {
           final tagMap = {for (final t in tags) t.id: t};
-          final chips = selectedTags
+          final List<Widget> chips = [];
+
+          // Display "no tag" chip
+          if (selectedTags.contains(kNoTagFilterId)) {
+            chips.add(Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: TagChip(
+                label: L10n.of(context).noTagFilter,
+                color: Colors.grey,
+                selected: true,
+                onTap: () {
+                  ref
+                      .read(tagSelectionProvider.notifier)
+                      .toggle(kNoTagFilterId);
+                  ref.read(bookListProvider.notifier).refresh();
+                },
+                dense: true,
+              ),
+            ));
+          }
+
+          // Display regular tag chips
+          chips.addAll(selectedTags
+              .where((id) => id != kNoTagFilterId)
               .map((id) => tagMap[id])
               .whereType<Tag>()
               .map((tag) => Padding(
@@ -281,8 +330,8 @@ class BookshelfPageState extends ConsumerState<BookshelfPage>
                       },
                       dense: true,
                     ),
-                  ))
-              .toList();
+                  )));
+
           return Row(children: chips);
         },
         loading: () => const SizedBox.shrink(),

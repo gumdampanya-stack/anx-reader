@@ -1,4 +1,5 @@
 import 'dart:io' as io;
+import 'package:anx_reader/utils/platform_utils.dart';
 import 'package:anx_reader/dao/database.dart';
 import 'package:anx_reader/service/sync/sync_client_base.dart';
 import 'package:anx_reader/utils/get_path/get_cache_dir.dart';
@@ -10,6 +11,7 @@ import 'package:path/path.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+// import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// Database safe sync manager
 /// Provides safe database download, validation and recovery mechanisms
@@ -31,14 +33,16 @@ class DatabaseSyncManager {
     required String remoteDbFileName,
     void Function(int received, int total)? onProgress,
   }) async {
-    final cacheDir = await getAnxCacheDir();
     final databasesPath = await getAnxDataBasesPath();
+    final cacheDir = AnxPlatform.isOhos
+        ? '${await getAnxDataBasesPath()}/cache'
+        : (await getAnxCacheDir()).path;
     final localDbPath = join(databasesPath, 'app_database.db');
 
     // Generate temp file name (use timestamp to ensure uniqueness)
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final tempDbName = '$_tempDbPrefix$timestamp.db';
-    final tempDbPath = join(cacheDir.path, tempDbName);
+    final tempDbPath = join(cacheDir, tempDbName);
 
     try {
       AnxLog.info('DatabaseSync: Starting safe database download');
@@ -121,16 +125,23 @@ class DatabaseSyncManager {
             'Database file too small: ${fileSize}B');
       }
 
+      // First, ensure the database is converted from WAL mode to DELETE mode
+      // This is necessary because downloaded databases may be in WAL mode
+      // and SQLite can't open them properly without the WAL files
+      if (!AnxPlatform.isOhos) {
+        await DBHelper.fixDatabaseHeader(dbPath);
+      }
+
       // Initialize FFI for desktop platforms
       Database? db;
       try {
         // Platform-specific database opening
-        if (io.Platform.isWindows) {
+        if (AnxPlatform.isWindows) {
           sqfliteFfiInit();
           db = await databaseFactoryFfi.openDatabase(
             dbPath,
             options: OpenDatabaseOptions(
-              readOnly: true,
+              readOnly: false,
               singleInstance: false,
             ),
           );
@@ -138,7 +149,7 @@ class DatabaseSyncManager {
           // Android/iOS
           db = await openDatabase(
             dbPath,
-            readOnly: true,
+            readOnly: false,
             singleInstance: false,
           );
         }
@@ -210,6 +221,10 @@ class DatabaseSyncManager {
     // Ensure database is closed
     await DBHelper.close();
 
+    // Clean up local WAL files before replacement
+    // This is critical on ALL platforms to avoid stale WAL/SHM files conflicting with the new DB
+    await DBHelper.cleanupWalFiles(localDbPath);
+
     // Use file move operation for atomic replacement
     final tempFile = io.File(tempDbPath);
     await tempFile.copy(localDbPath);
@@ -223,6 +238,9 @@ class DatabaseSyncManager {
       String backupPath, String localDbPath) async {
     try {
       await DBHelper.close();
+      // Ensure clean state before recovery
+      await DBHelper.cleanupWalFiles(localDbPath);
+
       await io.File(backupPath).copy(localDbPath);
       await DBHelper().initDB();
 
